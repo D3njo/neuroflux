@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Output files (generated)
+output/3d-files/*
+output/ct_converted/*
+output/screenshots/*
+output/segmentation/*
+!output/.gitkeep
+
+# SynthSeg model weights (large, downloaded at runtime)
+src/neuroflux/models/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

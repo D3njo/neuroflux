@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "neuroflux"
+version = "1.6.0"
+description = "Browser-based MRI segmentation pipeline powered by SynthSeg 2.0"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["mri", "segmentation", "neuroimaging", "synthseg", "brain"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "flask>=2.3,<4",
+    "flask-cors>=4.0",
+    "nibabel>=3.2",
+    "numpy>=1.23,<2.0",
+    "scipy>=1.10",
+    "scikit-image>=0.19",
+    "trimesh>=4.0",
+    "pydicom>=2.4",
+    "dicom2nifti>=2.4",
+]
+
+[project.scripts]
+neuroflux-server  = "neuroflux.server:main"
+neuroflux-segment = "neuroflux.segment:main"
+neuroflux-setup   = "neuroflux.setup_synthseg:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"neuroflux.data" = ["*.html", "*.nii", "*.nii.gz"]
