@@ -1,15 +1,8 @@
-```
-███╗   ██╗███████╗██╗   ██╗██████╗  ██████╗    ██╗    ██╗
-████╗  ██║██╔════╝██║   ██║██╔══██╗██╔═══██╗  ██╔╝   ██╔╝
-██╔██╗ ██║█████╗  ██║   ██║██████╔╝██║   ██║ ██╔╝   ██╔╝
-██║╚██╗██║██╔══╝  ██║   ██║██╔══██╗██║   ██║ ╚██╗   ╚██╗
-██║ ╚████║███████╗╚██████╔╝██║  ██║╚██████╔╝  ╚██╗   ╚██╗
-╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═╝
-                        ⬡ FLUX ⬡
-    Browser-based MRI segmentation  ·  SynthSeg 2.0 backend
-```
-
 <div align="center">
+
+# `N E U R O // F L U X`
+
+**⬡ Brain MRI Segmentation ⬡ SynthSeg 2.0 ⬡ Local-First ⬡**
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-cyan?style=flat-square&logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/flask-2.3%2B-cyan?style=flat-square&logo=flask&logoColor=white)
