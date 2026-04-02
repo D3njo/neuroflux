@@ -18,8 +18,9 @@ output/screenshots/*
 output/segmentation/*
 !output/.gitkeep
 
-# SynthSeg model weights (large, downloaded at runtime)
+# SynthSeg model weights (large files, not tracked in git)
 src/neuroflux/models/
+models/
 
 # IDE
 .vscode/

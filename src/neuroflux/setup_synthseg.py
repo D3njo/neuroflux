@@ -9,21 +9,15 @@ What this script does
   1. Creates synthseg_env/       -- isolated venv (Python 3.8 recommended)
   2. Clones https://github.com/BBillot/SynthSeg into synthseg_repo/
   3. pip-installs SynthSeg + its dependencies inside the venv
-  4. Downloads the pre-trained model weights via Docker (primary) or curl
-     (fallback) into synthseg_repo/models/
-
-Model weight acquisition strategy
-  1. Docker  — extracts from freesurfer/freesurfer:7.4.1 (cross-platform,
-               recommended, requires Docker Desktop)
-  2. curl    — tries UCL Dropbox / MGH FTP / HuggingFace (links may be stale)
-  3. Manual  — prints instructions if both methods fail
+  4. Copies the pre-trained model weights from the local models/ folder
+     into synthseg_repo/models/
 
 Usage
   python setup_synthseg.py [--python /path/to/python3.8] [--skip-env] [--skip-models]
 
   --python     Path to Python 3.8 interpreter (default: current interpreter)
   --skip-env   Skip venv creation + dependency install (jump straight to models)
-  --skip-models  Skip model weight download entirely
+  --skip-models  Skip model copy entirely
 
 Python 3.8 is required for SynthSeg 2.0's tensorflow==2.2.0 dependency.
 
@@ -37,26 +31,21 @@ import platform
 import subprocess
 import sys
 import shutil
-import urllib.request
 
-SERVER_DIR  = os.path.dirname(os.path.abspath(__file__))
-ENV_DIR     = os.path.join(SERVER_DIR, "synthseg_env")
-REPO_DIR    = os.path.join(SERVER_DIR, "synthseg_repo")
-REPO_URL    = "https://github.com/BBillot/SynthSeg.git"
-MODELS_DIR  = os.path.join(REPO_DIR, "models")
+SERVER_DIR        = os.path.dirname(os.path.abspath(__file__))
+ENV_DIR           = os.path.join(SERVER_DIR, "synthseg_env")
+REPO_DIR          = os.path.join(SERVER_DIR, "synthseg_repo")
+REPO_URL          = "https://github.com/BBillot/SynthSeg.git"
+MODELS_DIR        = os.path.join(REPO_DIR, "models")
+LOCAL_MODELS_DIR  = os.path.join(SERVER_DIR, "..", "..", "models")
 
-# Model weights -- hosted on UCL Dropbox (official SynthSeg distribution)
-# See: https://github.com/BBillot/SynthSeg#2-segmenting-your-own-data
+# Model weight files located in the local models/ folder
 MODEL_FILES = [
-    # (filename, url)
-    (
-        "synthseg_2.0.h5",
-        "https://www.dropbox.com/s/hrx4y4eeewfd4ld/synthseg_2.0.h5?dl=1",
-    ),
-    (
-        "synthseg_2.0_robust.h5",
-        "https://www.dropbox.com/s/2bqf0z2dxnkuucl/synthseg_2.0_robust.h5?dl=1",
-    ),
+    "synthseg_1.0.h5",
+    "synthseg_2.0.h5",
+    "synthseg_parc_2.0.h5",
+    "synthseg_qc_2.0.h5",
+    "synthseg_robust_2.0.h5",
 ]
 
 # pip requirements for SynthSeg inside its isolated venv
@@ -130,147 +119,40 @@ def step_install_deps():
     print("      Dependencies installed.")
 
 
-def step_download_models():
-    """Download SynthSeg model weights.
-
-    Strategy (in order):
-      1. Docker  — extracts weights from freesurfer/freesurfer:7.4.1 image.
-                   Works on Windows / macOS / Linux without any FreeSurfer install.
-      2. curl    — direct URL download (fallback; links may be stale).
-      3. Manual  — prints instructions and exits if both methods fail.
-    """
+def step_copy_models():
+    """Copy SynthSeg model weights from the local models/ folder."""
     os.makedirs(MODELS_DIR, exist_ok=True)
 
-    # Check which files are already present and valid
-    needed = []
-    for fname, url in MODEL_FILES:
-        dest = os.path.join(MODELS_DIR, fname)
-        if os.path.isfile(dest) and os.path.getsize(dest) > 10_000_000:
-            print(f"[skip] {fname} already present ({os.path.getsize(dest)/1e6:.0f} MB).")
-        else:
-            needed.append((fname, url))
+    local_dir = os.path.normpath(LOCAL_MODELS_DIR)
+    if not os.path.isdir(local_dir):
+        print(f"\nERROR: Local models folder not found: {local_dir}")
+        sys.exit(1)
 
-    if not needed:
-        return
-
-    print(f"\n[4/4] Fetching {len(needed)} model weight file(s) …")
-
-    # ── Method 1: Docker ──────────────────────────────────────────────────────
-    if shutil.which("docker"):
-        print("  Docker found — pulling freesurfer/freesurfer:7.4.1 …")
-        print("  (first run downloads ~1.5 GB; subsequent runs use cache)")
-
-        # Make sure the image is available
-        pull = subprocess.run(
-            ["docker", "pull", "freesurfer/freesurfer:7.4.1"],
-            capture_output=False,
-        )
-        if pull.returncode != 0:
-            print("  WARNING: docker pull failed — trying curl fallback …")
-        else:
-            # Copy each needed file out of the container
-            models_in_container = "/usr/local/freesurfer/models"
-            copy_cmd = " && ".join(
-                f"cp {models_in_container}/{fname} /output/"
-                for fname, _ in needed
-            )
-            result = subprocess.run(
-                [
-                    "docker", "run", "--rm",
-                    "-v", f"{MODELS_DIR}:/output",
-                    "freesurfer/freesurfer:7.4.1",
-                    "bash", "-c", copy_cmd,
-                ],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                # Verify files landed correctly
-                ok = all(
-                    os.path.isfile(os.path.join(MODELS_DIR, fname))
-                    and os.path.getsize(os.path.join(MODELS_DIR, fname)) > 10_000_000
-                    for fname, _ in needed
-                )
-                if ok:
-                    for fname, _ in needed:
-                        sz = os.path.getsize(os.path.join(MODELS_DIR, fname)) / 1e6
-                        print(f"  ✓ {fname} ({sz:.0f} MB) — extracted via Docker.")
-                    return
-                else:
-                    print("  WARNING: Docker ran but files look empty — trying curl …")
-            else:
-                print(f"  WARNING: Docker copy failed: {result.stderr.strip()[:200]}")
-                print("  Trying curl fallback …")
-    else:
-        print("  Docker not found — trying curl …")
-
-    # ── Method 2: curl / urllib fallback ─────────────────────────────────────
-    FALLBACK_URLS = [
-        # primary UCL dropbox (may be stale)
-        "https://www.dropbox.com/s/hrx4y4eeewfd4ld/{fname}?dl=1",
-        "https://www.dropbox.com/s/2bqf0z2dxnkuucl/{fname}?dl=1",
-        # MGH FTP
-        "https://ftp.nmr.mgh.harvard.edu/pub/dist/lcnpublic/dist/SynthSeg/{fname}",
-        # HuggingFace
-        "https://huggingface.co/freesurfer/synthseg/resolve/main/{fname}",
-    ]
+    print(f"\n[4/4] Copying model weights from {local_dir} …")
 
     any_failed = False
-    for fname, primary_url in needed:
+    for fname in MODEL_FILES:
+        src  = os.path.join(local_dir, fname)
         dest = os.path.join(MODELS_DIR, fname)
-        tmp  = dest + ".tmp"
 
-        urls_to_try = [primary_url] + [
-            u.replace("{fname}", fname) for u in FALLBACK_URLS
-            if u.replace("{fname}", fname) != primary_url
-        ]
+        if os.path.isfile(dest):
+            print(f"  [skip] {fname} already present ({os.path.getsize(dest)/1e6:.0f} MB).")
+            continue
 
-        downloaded = False
-        for url in urls_to_try:
-            print(f"  Trying: {url}")
-            try:
-                def _progress(block, block_size, total):
-                    if total > 0:
-                        pct = min(100, block * block_size * 100 // total)
-                        print(f"\r  {fname}: {pct}%", end="", flush=True)
-                urllib.request.urlretrieve(url, tmp, reporthook=_progress)
-                print()
-                if os.path.getsize(tmp) < 10_000_000:
-                    print(f"  File too small ({os.path.getsize(tmp)} bytes) — skipping URL.")
-                    os.remove(tmp)
-                    continue
-                os.rename(tmp, dest)
-                print(f"  ✓ {fname} ({os.path.getsize(dest)/1e6:.0f} MB) saved.")
-                downloaded = True
-                break
-            except Exception as e:
-                if os.path.isfile(tmp):
-                    os.remove(tmp)
-                print(f"  Failed: {e}")
-
-        if not downloaded:
+        if not os.path.isfile(src):
+            print(f"  ✗ {fname} not found in {local_dir}")
             any_failed = True
-            print(f"  ✗ Could not download {fname} from any source.")
+            continue
 
-    # ── Method 3: Manual instructions ────────────────────────────────────────
+        shutil.copy2(src, dest)
+        print(f"  ✓ {fname} ({os.path.getsize(dest)/1e6:.0f} MB) copied.")
+
     if any_failed:
         print()
         print("=" * 60)
-        print("ACTION REQUIRED — model weights could not be downloaded")
+        print("ACTION REQUIRED — some model weights are missing")
         print("=" * 60)
-        print()
-        print("Please obtain the weights manually using one of these methods:")
-        print()
-        print("Option A — Docker (recommended, cross-platform):")
-        print("  1. Install Docker Desktop: https://www.docker.com/products/docker-desktop/")
-        print("  2. Re-run this script:  python setup_synthseg.py --skip-env")
-        print()
-        print("Option B — FreeSurfer (macOS/Linux):")
-        print("  1. Download FreeSurfer 7.4.1: https://surfer.nmr.mgh.harvard.edu/fswiki/rel7downloads")
-        print("  2. Copy weights:")
-        print(f"     cp $FREESURFER_HOME/models/synthseg_2.0.h5         {MODELS_DIR}/")
-        print(f"     cp $FREESURFER_HOME/models/synthseg_2.0_robust.h5  {MODELS_DIR}/")
-        print()
-        print(f"Both files must be placed in: {MODELS_DIR}")
+        print(f"Place the missing .h5 files in: {local_dir}")
         print("=" * 60)
         sys.exit(1)
 def step_verify():
@@ -305,7 +187,7 @@ def main():
     )
     p.add_argument(
         "--skip-models", action="store_true",
-        help="Skip model weight download (use if you supply weights manually)",
+        help="Skip model weight copy",
     )
     p.add_argument(
         "--skip-env", action="store_true",
@@ -335,7 +217,7 @@ def main():
     else:
         print("[skip-env] Skipping venv / dependency setup.")
     if not args.skip_models:
-        step_download_models()
+        step_copy_models()
     step_verify()
 
     print("\n" + "="*60)
