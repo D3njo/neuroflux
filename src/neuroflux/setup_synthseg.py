@@ -31,6 +31,7 @@ import platform
 import subprocess
 import sys
 import shutil
+import urllib.request
 
 SERVER_DIR        = os.path.dirname(os.path.abspath(__file__))
 ENV_DIR           = os.path.join(SERVER_DIR, "synthseg_env")
@@ -39,7 +40,11 @@ REPO_URL          = "https://github.com/BBillot/SynthSeg.git"
 MODELS_DIR        = os.path.join(REPO_DIR, "models")
 LOCAL_MODELS_DIR  = os.path.join(SERVER_DIR, "..", "..", "models")
 
-# Model weight files located in the local models/ folder
+_RELEASE_BASE = (
+    "https://github.com/D3njo/neuroflux/releases/download/v1.0-models"
+)
+
+# Model weight files — downloaded from GitHub Releases if not present locally
 MODEL_FILES = [
     "synthseg_1.0.h5",
     "synthseg_2.0.h5",
@@ -120,39 +125,62 @@ def step_install_deps():
 
 
 def step_copy_models():
-    """Copy SynthSeg model weights from the local models/ folder."""
+    """Provide SynthSeg model weights.
+
+    Strategy (in order):
+      1. Local  — copy from the project-root models/ folder if present.
+      2. Remote — download from GitHub Releases (requires public repo).
+    """
     os.makedirs(MODELS_DIR, exist_ok=True)
-
     local_dir = os.path.normpath(LOCAL_MODELS_DIR)
-    if not os.path.isdir(local_dir):
-        print(f"\nERROR: Local models folder not found: {local_dir}")
-        sys.exit(1)
 
-    print(f"\n[4/4] Copying model weights from {local_dir} …")
+    print(f"\n[4/4] Providing model weights …")
 
     any_failed = False
     for fname in MODEL_FILES:
-        src  = os.path.join(local_dir, fname)
         dest = os.path.join(MODELS_DIR, fname)
 
-        if os.path.isfile(dest):
+        if os.path.isfile(dest) and os.path.getsize(dest) > 1_000_000:
             print(f"  [skip] {fname} already present ({os.path.getsize(dest)/1e6:.0f} MB).")
             continue
 
-        if not os.path.isfile(src):
-            print(f"  ✗ {fname} not found in {local_dir}")
-            any_failed = True
+        # ── 1. Local copy ────────────────────────────────────────────────────
+        src = os.path.join(local_dir, fname)
+        if os.path.isfile(src):
+            shutil.copy2(src, dest)
+            print(f"  ✓ {fname} ({os.path.getsize(dest)/1e6:.0f} MB) copied from local folder.")
             continue
 
-        shutil.copy2(src, dest)
-        print(f"  ✓ {fname} ({os.path.getsize(dest)/1e6:.0f} MB) copied.")
+        # ── 2. GitHub Releases download ──────────────────────────────────────
+        url = f"{_RELEASE_BASE}/{fname}"
+        tmp = dest + ".tmp"
+        print(f"  Downloading {fname} from GitHub Releases …")
+        try:
+            def _progress(block, block_size, total):
+                if total > 0:
+                    pct = min(100, block * block_size * 100 // total)
+                    print(f"\r    {fname}: {pct}%", end="", flush=True)
+            urllib.request.urlretrieve(url, tmp, reporthook=_progress)
+            print()
+            if os.path.getsize(tmp) < 1_000_000:
+                os.remove(tmp)
+                raise RuntimeError(f"Downloaded file too small — is the repo public?")
+            os.replace(tmp, dest)
+            print(f"  ✓ {fname} ({os.path.getsize(dest)/1e6:.0f} MB) downloaded.")
+        except Exception as e:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+            print(f"  ✗ {fname}: {e}")
+            any_failed = True
 
     if any_failed:
         print()
         print("=" * 60)
-        print("ACTION REQUIRED — some model weights are missing")
+        print("ACTION REQUIRED — some model weights could not be obtained")
         print("=" * 60)
-        print(f"Place the missing .h5 files in: {local_dir}")
+        print("Either:")
+        print(f"  A) Place the .h5 files manually in: {local_dir}")
+        print(f"  B) Ensure https://github.com/D3njo/neuroflux is set to public")
         print("=" * 60)
         sys.exit(1)
 def step_verify():
