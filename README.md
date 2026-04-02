@@ -121,7 +121,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 ### Step 1 — Clone and install
 
 ```bash
-git clone https://github.com/<your-username>/NeuroFlux.git
+git clone https://github.com/D3njo/NeuroFlux.git
 cd NeuroFlux
 
 # Create main environment
