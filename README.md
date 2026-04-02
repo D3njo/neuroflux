@@ -60,12 +60,12 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 ## ⬡ ARCHITECTURE
 
 ```
-┌─────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────┐
 │  Browser  (neuroflux.html — NiiVue + Three.js + vanilla JS) │
-└────────────────────────┬────────────────────────────────┘
+└────────────────────────┬────────────────────────────────────┘
                          │ HTTP / SSE  (localhost:5050)
 ┌────────────────────────▼────────────────────────────────┐
-│  Flask Server  (server.py)                               │
+│  Flask Server  (server.py)                              │
 │  · File upload / DICOM convert                          │
 │  · Job queue + Server-Sent Events streaming             │
 │  · Mesh generation (trimesh + scikit-image)             │
