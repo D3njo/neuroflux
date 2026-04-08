@@ -196,6 +196,80 @@ def _check_models(robust: bool):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _crop_to_brain_fov(input_path: str, tmp_dir: str, margin_mm: float = 25.0) -> str:
+    """
+    Pre-crop a scan to the FOV that contains only the skull/brain.
+
+    Many clinical scans include neck, face and large empty FOV.  SynthSeg's
+    center crop then lands in the neck rather than the brain.
+
+    Strategy: compute the cross-sectional area profile along each axis.
+    The skull/brain produces a prominent peak (large area) while neck and
+    vertex have much smaller cross-sections.  We find that axis and crop
+    to the contiguous region around the peak that stays above 40 % of the
+    maximum — which reliably isolates the skull dome.
+
+    Returns the path to the pre-cropped file, or the original path if the
+    scan is already well-centered (< 10 % removed) or detection fails.
+    """
+    img = nib.load(input_path)
+    data = img.get_fdata(dtype=np.float32)
+    affine = img.affine
+    voxel_sizes = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))
+    margin_vox = np.ceil(margin_mm / voxel_sizes).astype(int)
+
+    # Non-background mask (> 2nd percentile of non-zero voxels)
+    nonzero = data[data > 0]
+    if len(nonzero) < 1000:
+        return input_path
+    mask = data > np.percentile(nonzero, 2)
+
+    # Cross-sectional area profile along each axis
+    profiles = []
+    for ax in range(3):
+        other = tuple(i for i in range(3) if i != ax)
+        profiles.append(mask.sum(axis=other).astype(float))
+
+    # The skull/brain axis has the highest peak-to-mean ratio:
+    # brain dome >> neck cross-section
+    ratios = [p.max() / (p.mean() + 1e-6) for p in profiles]
+    si_axis = int(np.argmax(ratios))
+    profile = profiles[si_axis]
+
+    # Expand from the peak outward while area stays > 40 % of maximum
+    threshold = profile.max() * 0.40
+    peak_idx = int(np.argmax(profile))
+
+    start = peak_idx
+    while start > 0 and profile[start - 1] > threshold:
+        start -= 1
+    end = peak_idx
+    while end < len(profile) - 1 and profile[end + 1] > threshold:
+        end += 1
+
+    # Add margin
+    start = max(0, start - int(margin_vox[si_axis]))
+    end   = min(data.shape[si_axis] - 1, end + int(margin_vox[si_axis]))
+
+    # Skip if less than 10 % removed — not worth rewriting the file
+    if (end - start + 1) >= 0.90 * data.shape[si_axis]:
+        return input_path
+
+    slices = [slice(None)] * 3
+    slices[si_axis] = slice(start, end + 1)
+    cropped = data[tuple(slices)]
+
+    # Shift affine origin to account for removed slices
+    new_affine = affine.copy()
+    offset = np.zeros(3)
+    offset[si_axis] = float(start)
+    new_affine[:3, 3] = affine[:3, :3] @ offset + affine[:3, 3]
+
+    out_path = os.path.join(tmp_dir, "brain_fov.nii.gz")
+    nib.save(nib.Nifti1Image(cropped, new_affine, img.header), out_path)
+    return out_path
+
+
 def _has_real_swap() -> bool:
     """
     Return True only if the system has real disk-backed swap (file or partition).
@@ -502,8 +576,15 @@ def run_pipeline(
         volumes_path    = os.path.join(tmp, "volumes.csv")
         qc_path         = os.path.join(tmp, "qc.csv")
 
+        # Pre-crop to brain FOV before SynthSeg so its center crop lands
+        # on the brain even when the scan includes neck, face or large empty FOV.
+        _emit("setup", 6, "Localising brain FOV…")
+        seg_input = _crop_to_brain_fov(input_path, tmp)
+        if seg_input != input_path:
+            _emit("setup", 7, "Brain FOV detected — pre-cropped to skull region.")
+
         _run_synthseg(
-            input_path=input_path,
+            input_path=seg_input,
             seg_path=fs_seg_path,
             resampled_path=resampled_path,
             posteriors_path=posteriors_path,
