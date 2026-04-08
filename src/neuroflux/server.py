@@ -217,7 +217,7 @@ def _run_job(
 
         # If process exited with an error but never emitted a JSON error message
         if proc.returncode != 0:
-            stderr_out = "".join(stderr_lines)[:400]
+            stderr_out = "".join(stderr_lines)
             err_msg = json.dumps({
                 "status": "error",
                 "msg": f"Process exited {proc.returncode}. Stderr: {stderr_out}",

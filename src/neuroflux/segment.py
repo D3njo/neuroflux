@@ -221,12 +221,12 @@ def _run_synthseg(
     if low_memory:
         # fast=True: skip the flipped-image second pass (halves peak activation RAM)
         fast = True
-        # crop to 192³: reduces input tensor from ~256³ to ~192³ (~55% smaller volume)
-        cropping = 192
+        # crop to 128³: reduces input tensor to ~128³ (~80% smaller volume vs uncropped 256³)
+        cropping = 128
         # skip QC model entirely to avoid loading its weights into RAM
         do_qc_path = None
         _emit("synthseg", 8,
-              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop192+no-QC, {threads} thread(s))…")
+              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop128+no-QC, {threads} thread(s))…")
     else:
         cropping = None
         do_qc_path = qc_path
