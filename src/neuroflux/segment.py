@@ -196,26 +196,49 @@ def _check_models(robust: bool):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _has_swap() -> bool:
-    """Return True if the system has any swap space configured (Linux/macOS/Windows)."""
+def _has_real_swap() -> bool:
+    """
+    Return True only if the system has real disk-backed swap (file or partition).
+    zram (compressed-RAM swap used by ChromeOS/Android) is excluded because it
+    does not provide additional memory — it compresses existing RAM and cannot
+    absorb the large tensors produced by SynthSeg without triggering OOM anyway.
+
+    /proc/swaps columns: Filename  Type  Size  Used  Priority
+    Real swap examples:
+      /swapfile          file       ...
+      /dev/sda2          partition  ...
+    zram example (ChromeOS):
+      /dev/zram0         partition  ...   ← excluded
+    """
     try:
-        # Linux: read /proc/meminfo — no external dependencies
-        with open("/proc/meminfo") as f:
+        with open("/proc/swaps") as f:
             for line in f:
-                if line.startswith("SwapTotal:"):
-                    return int(line.split()[1]) > 0
+                line = line.strip()
+                if not line or line.startswith("Filename"):
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                filename, swap_type = parts[0], parts[1]
+                # Skip zram devices — they don't add usable memory headroom
+                if "zram" in filename:
+                    continue
+                # File-backed or real partition swap
+                if swap_type in ("file", "partition"):
+                    return True
+        # /proc/swaps was readable but contained no real swap entries
+        return False
     except OSError:
         pass
     try:
-        # macOS: sysctl vm.swapusage
+        # macOS: dynamic paging always counts as real swap
         import subprocess
         out = subprocess.check_output(["sysctl", "vm.swapusage"], text=True, timeout=3)
-        # "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M"
         total_str = out.split("total =")[1].split()[0].rstrip("M")
         return float(total_str) > 0
     except Exception:
         pass
-    # Windows or unknown — assume swap exists to avoid unnecessary cropping
+    # Windows or other unknown platform — assume real swap exists
     return True
 
 
@@ -253,7 +276,7 @@ def _run_synthseg(
         # Only crop when the system has no swap space.
         # With swap the OS can page out tensors to disk instead of OOM-killing the process,
         # so cropping (which cuts off parts of large brains) is unnecessary.
-        swap_available = _has_swap()
+        swap_available = _has_real_swap()
         if swap_available:
             cropping = None
             _emit("synthseg", 8,
