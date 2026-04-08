@@ -51,13 +51,14 @@ where = ["src"]
 "neuroflux.synthseg.data.labels_classes_priors" = ["*.npy"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-timeout>=2.3"]
 # Apple Silicon GPU acceleration
 metal = ["tensorflow-metal>=1.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+timeout = 30          # default per-test timeout in seconds (fast tests)
 markers = [
     "slow: tests that require TensorFlow and take significant time (deselect with -m 'not slow')",
 ]
