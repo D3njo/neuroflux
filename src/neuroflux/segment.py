@@ -70,8 +70,9 @@ def _resolve_model_dir() -> pathlib.Path:
     if env:
         candidates.append(pathlib.Path(env))
 
-    # editable install: __file__ is src/neuroflux/segment.py → ../../../models
-    repo_models = (_HERE / ".." / ".." / ".." / "models").resolve()
+    # editable install: __file__ is src/neuroflux/segment.py
+    # _HERE = src/neuroflux/ → ../../models = <repo_root>/models
+    repo_models = (_HERE / ".." / ".." / "models").resolve()
     candidates.append(repo_models)
 
     # standard user data directory (works for pip install without -e)
