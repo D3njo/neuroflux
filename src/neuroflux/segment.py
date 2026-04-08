@@ -1,21 +1,20 @@
 """
-NEURO//FLUX — Brain Segmentation Pipeline v1.6  (SynthSeg 2.0)
+NEURO//FLUX — Brain Segmentation Pipeline v2.0  (SynthSeg 2.0)
 ===============================================================
 Cross-platform (Windows / macOS / Linux).
 No FreeSurfer installation required.
-No ANTs / antspynet / TensorFlow dependency in the main process.
+SynthSeg is now bundled directly as neuroflux.synthseg — no separate venv needed.
 
 Backend: SynthSeg 2.0 (Billot et al., Harvard/MGH, PNAS 2023)
   - Contrast- and resolution-agnostic 3-D U-Net
-  - Domain-randomisation training: works out-of-the-box on any MRI contrast,
-    any resolution, without retraining or fine-tuning
+  - Domain-randomisation training: works on any MRI contrast / resolution
   - 95 FreeSurfer structures -> mapped to 7-class tissue + 10-class hemi
   - --robust model for clinical / low-SNR / large-spacing scans
   - QC scores and regional volumes written alongside NIfTI outputs
-  - GPU auto-detected by SynthSeg; graceful CPU fallback
+  - GPU auto-detected; graceful CPU fallback
 
-One-time setup
-  python setup_synthseg.py
+One-time setup (model weights only)
+  neuroflux-setup            # or: python -m neuroflux.setup_synthseg
 
 Pipeline
   SynthSeg predict -> label remap -> hemi split -> save outputs + summary.json
@@ -35,21 +34,24 @@ import json
 import time
 import traceback
 import argparse
-import platform
-import subprocess
+import pathlib
 import shutil
 import tempfile
-import threading
 
 import numpy as np
 import nibabel as nib
 
-# Label mapping lives in labels.py next to this file
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from labels import fs_to_tissue, fs_to_hemi, TISSUE_NAMES, HEMI_NAMES
 
+# ── Paths ─────────────────────────────────────────────────────────────────────
 
-# ── Progress / status emitters (same JSON protocol as v3.x) ──────────────────
+_HERE       = pathlib.Path(__file__).parent
+_DATA_DIR   = _HERE / "synthseg" / "data" / "labels_classes_priors"
+# Model weights live two levels up from src/neuroflux/ → repo root / models/
+_MODEL_DIR  = _HERE.parent.parent / "models"
+
+
+# ── Progress / status emitters ────────────────────────────────────────────────
 
 def _emit(step, pct, msg):
     print(json.dumps({"step": step, "pct": pct, "msg": msg}), flush=True)
@@ -61,38 +63,51 @@ def _error(msg):
     print(json.dumps({"status": "error", "msg": msg}), flush=True)
 
 
-# ── SynthSeg environment paths ────────────────────────────────────────────────
+# ── TF configuration (must run before any TF import) ─────────────────────────
 
-_SERVER_DIR    = os.path.dirname(os.path.abspath(__file__))
-_SS_ENV        = os.path.join(_SERVER_DIR, "synthseg_env")
-_SS_REPO       = os.path.join(_SERVER_DIR, "synthseg_repo")
-_SS_SCRIPT     = os.path.join(_SS_REPO, "scripts", "commands", "SynthSeg_predict.py")
+def _configure_tf(threads: int):
+    """
+    Configure TensorFlow before it initialises.
+    - Suppress noisy startup logs.
+    - Enable memory growth so TF/Metal does not pre-allocate all RAM
+      (critical on unified-memory / low-RAM systems like Apple Silicon or
+       ChromeOS Flex with 8 GB).
+    - Wire the --threads argument to TF's inter/intra-op thread counts.
+    """
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
+    import tensorflow as tf
+
+    tf.config.threading.set_inter_op_parallelism_threads(threads)
+    tf.config.threading.set_intra_op_parallelism_threads(threads)
+
+    for gpu in tf.config.list_physical_devices("GPU"):
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass  # device already initialised
 
 
-def _ss_python():
-    """Path to the Python interpreter inside the SynthSeg venv."""
-    if platform.system() == "Windows":
-        return os.path.join(_SS_ENV, "Scripts", "python.exe")
-    return os.path.join(_SS_ENV, "bin", "python")
+# ── Model weight check ────────────────────────────────────────────────────────
 
-
-def _check_env():
-    """Raise a descriptive error if the SynthSeg venv is missing."""
-    py  = _ss_python()
-    scr = _SS_SCRIPT
-    ok  = os.path.isfile(py) and os.path.isfile(scr)
-    if not ok:
-        missing = []
-        if not os.path.isfile(py):  missing.append(f"Python env:  {py}")
-        if not os.path.isfile(scr): missing.append(f"Script:      {scr}")
+def _check_models(robust: bool):
+    """Raise a descriptive error when required .h5 weights are missing."""
+    needed = [
+        "synthseg_2.0.h5" if not robust else "synthseg_robust_2.0.h5",
+        "synthseg_qc_2.0.h5",
+    ]
+    missing = [f for f in needed if not (_MODEL_DIR / f).is_file()]
+    if missing:
         raise RuntimeError(
-            "SynthSeg environment not found.\n"
-            "Run:  python setup_synthseg.py\n"
-            "Missing:\n" + "\n".join(f"  {m}" for m in missing)
+            "Model weights not found. Run setup first:\n"
+            "  neuroflux-setup\n"
+            "Missing in {}:\n".format(_MODEL_DIR)
+            + "\n".join(f"  {f}" for f in missing)
         )
 
 
-# ── SynthSeg subprocess ───────────────────────────────────────────────────────
+# ── SynthSeg direct call ──────────────────────────────────────────────────────
 
 def _run_synthseg(
     input_path, seg_path, resampled_path,
@@ -100,75 +115,49 @@ def _run_synthseg(
     robust=False, fast=False, threads=1, use_ct=False,
 ):
     """
-    Call SynthSeg_predict.py inside its isolated venv as a subprocess.
-
-    All output paths are passed explicitly so we never depend on SynthSeg's
-    internal naming conventions.  stderr is drained in a background thread
-    to prevent OS pipe-buffer deadlock on long Python tracebacks.
+    Call SynthSeg's predict() directly in-process.
+    Replaces the old subprocess approach (no separate venv needed).
     """
-    cmd = [
-        _ss_python(), _SS_SCRIPT,
-        "--i",        input_path,
-        "--o",        seg_path,
-        "--resample", resampled_path,
-        "--post",     posteriors_path,
-        "--vol",      volumes_path,
-        "--qc",       qc_path,
-        "--threads",  str(threads),
-    ]
-    if robust:
-        cmd.append("--robust")
-    if fast and not robust:   # SynthSeg ignores --fast when --robust is active
-        cmd.append("--fast")
-    if use_ct:
-        cmd.append("--ct")
+    # TF must be configured before the first TF import
+    _configure_tf(threads)
+
+    # Lazy import — keeps TF out of module-load time
+    from neuroflux.synthseg.predict_synthseg import predict as _ss_predict
 
     mode = "robust" if robust else "standard"
     _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {threads} thread(s))…")
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
+    _ss_predict(
+        path_images               = input_path,
+        path_segmentations        = seg_path,
+        path_model_segmentation   = str(_MODEL_DIR / (
+            "synthseg_robust_2.0.h5" if robust else "synthseg_2.0.h5"
+        )),
+        labels_segmentation       = str(_DATA_DIR / "synthseg_segmentation_labels_2.0.npy"),
+        robust                    = robust,
+        fast                      = fast or robust,
+        v1                        = False,
+        n_neutral_labels          = 19,
+        labels_denoiser           = str(_DATA_DIR / "synthseg_denoiser_labels_2.0.npy"),
+        path_posteriors           = posteriors_path,
+        path_resampled            = resampled_path,
+        path_volumes              = volumes_path,
+        do_parcellation           = False,
+        path_model_parcellation   = str(_MODEL_DIR / "synthseg_parc_2.0.h5"),
+        labels_parcellation       = str(_DATA_DIR / "synthseg_parcellation_labels.npy"),
+        path_qc_scores            = qc_path,
+        path_model_qc             = str(_MODEL_DIR / "synthseg_qc_2.0.h5"),
+        labels_qc                 = str(_DATA_DIR / "synthseg_qc_labels_2.0.npy"),
+        cropping                  = None,
+        ct                        = use_ct,
+        names_segmentation        = str(_DATA_DIR / "synthseg_segmentation_names_2.0.npy"),
+        names_parcellation        = str(_DATA_DIR / "synthseg_parcellation_names.npy"),
+        names_qc                  = str(_DATA_DIR / "synthseg_qc_names_2.0.npy"),
+        topology_classes          = str(_DATA_DIR / "synthseg_topological_classes_2.0.npy"),
+        verbose                   = False,
     )
 
-    # Drain stderr in background -- avoids OS pipe-buffer deadlock
-    stderr_lines = []
-    def _drain():
-        for line in proc.stderr:
-            stderr_lines.append(line)
-    drain_t = threading.Thread(target=_drain, daemon=True)
-    drain_t.start()
-
-    # Forward SynthSeg stdout as progress events
-    # SynthSeg prints things like: "predicting 1/1"  "saving seg..."
-    _pct_map = {
-        "predicting": 30,
-        "saving":     70,
-        "done":       85,
-    }
-    for raw in iter(proc.stdout.readline, ""):
-        line = raw.rstrip()
-        if not line:
-            continue
-        pct = next(
-            (v for k, v in _pct_map.items() if k in line.lower()),
-            None,
-        )
-        if pct is not None:
-            _emit("synthseg", pct, line.strip())
-
-    proc.wait()
-    drain_t.join(timeout=5)
-
-    if proc.returncode != 0:
-        stderr_out = "".join(stderr_lines)[:800]
-        raise RuntimeError(
-            f"SynthSeg exited with code {proc.returncode}.\n"
-            f"Stderr (last 800 chars):\n{stderr_out}"
-        )
+    _emit("synthseg", 85, "SynthSeg inference complete.")
 
 
 # ── Post-processing ───────────────────────────────────────────────────────────
@@ -198,7 +187,6 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
         nib.save(out_img, path)
         return path
 
-    # Log tissue volumes
     for lbl, name in TISSUE_NAMES.items():
         vox = int((tissue_arr == lbl).sum())
         _emit("remap", 88, f"  {name:12s}: {vox:>10,} vox")
@@ -206,7 +194,6 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
     seg_full_path = _save(tissue_arr, "seg_full.nii.gz")
     _emit("remap", 90, "seg_full.nii.gz saved.")
 
-    # Log hemi volumes
     for lbl, name in HEMI_NAMES.items():
         vox = int((hemi_arr == lbl).sum())
         _emit("hemi", 93, f"  {name:6s}: {vox:>10,} vox")
@@ -214,13 +201,11 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
     seg_hemi_path = _save(hemi_arr, "seg_hemi.nii.gz")
     _emit("hemi", 95, "seg_hemi.nii.gz saved.")
 
-    # "original" = the 1 mm isotropic T1 resampled by SynthSeg (--resample)
     original_path = os.path.join(output_dir, "original.nii.gz")
     if resampled_path and os.path.isfile(resampled_path):
         if os.path.abspath(resampled_path) != os.path.abspath(original_path):
             shutil.copy2(resampled_path, original_path)
     elif not os.path.isfile(original_path):
-        # Fallback: copy the raw T1 input (resampled file not available)
         fallback = input_path if (input_path and os.path.isfile(input_path)) else None
         if fallback:
             shutil.copy2(fallback, original_path)
@@ -231,10 +216,6 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
 # ── QC / volume summary ───────────────────────────────────────────────────────
 
 def _write_summary(volumes_path, qc_path, output_dir, elapsed_sec, robust, threads):
-    """
-    Merge SynthSeg's volumes CSV + QC CSV into a single summary.json.
-    Returns path to summary.json.
-    """
     import csv
 
     def _read_csv(path):
@@ -246,7 +227,7 @@ def _write_summary(volumes_path, qc_path, output_dir, elapsed_sec, robust, threa
             return {}
         headers, values = rows[0], rows[1]
         result = {}
-        for h, v in zip(headers[1:], values[1:]):   # skip subject-name column
+        for h, v in zip(headers[1:], values[1:]):
             try:
                 result[h] = float(v)
             except ValueError:
@@ -279,7 +260,7 @@ def run_pipeline(
     use_ct=False,
 ):
     """
-    Run the full NEUROFLUX v1.6 segmentation pipeline.
+    Run the full NEUROFLUX v2.0 segmentation pipeline.
 
     Parameters
     ----------
@@ -309,8 +290,8 @@ def run_pipeline(
         return os.path.join(output_dir, name)
 
     # ── 1. Pre-flight ─────────────────────────────────────────────────────────
-    _emit("setup", 2, "Checking SynthSeg environment…")
-    _check_env()
+    _emit("setup", 2, "Checking model weights…")
+    _check_models(robust)
 
     try:
         img_check = nib.load(input_path)
@@ -329,8 +310,6 @@ def run_pipeline(
     ))
 
     # ── 2. SynthSeg inference ─────────────────────────────────────────────────
-    # Intermediate files go into a tempdir; only the final remapped files
-    # are written to output_dir to keep it clean.
     with tempfile.TemporaryDirectory(prefix="neuroflux_ss_") as tmp:
         fs_seg_path     = os.path.join(tmp, "synthseg_fs.nii.gz")
         resampled_path  = os.path.join(tmp, "resampled.nii.gz")
@@ -356,8 +335,6 @@ def run_pipeline(
                 "SynthSeg produced no output file — check the error above."
             )
 
-        _emit("synthseg", 85, "SynthSeg inference complete.")
-
         # ── 3. Label remap + hemi split ───────────────────────────────────────
         original_path, seg_full_path, seg_hemi_path = _remap_and_split(
             fs_seg_path=fs_seg_path,
@@ -378,7 +355,6 @@ def run_pipeline(
             threads=threads,
         )
 
-        # Keep raw FreeSurfer label volume for any downstream analysis
         fs_out = out("seg_fs_labels.nii.gz")
         shutil.copy2(fs_seg_path, fs_out)
 
@@ -399,7 +375,7 @@ def run_pipeline(
 
 def _build_parser():
     p = argparse.ArgumentParser(
-        description="NEURO//FLUX v1.6 — SynthSeg 2.0 brain segmentation",
+        description="NEURO//FLUX v2.0 — SynthSeg 2.0 brain segmentation",
     )
     p.add_argument("input",
                    help="Input NIfTI (.nii / .nii.gz)")
