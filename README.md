@@ -4,10 +4,11 @@
 
 **⬡ Brain MRI Segmentation ⬡ SynthSeg 2.0 ⬡ Local-First ⬡**
 
-![Python](https://img.shields.io/badge/python-3.10%2B-cyan?style=flat-square&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/python-3.10%20·%203.11-cyan?style=flat-square&logo=python&logoColor=white)
+![TensorFlow](https://img.shields.io/badge/tensorflow-2.15-cyan?style=flat-square&logo=tensorflow&logoColor=white)
 ![Flask](https://img.shields.io/badge/flask-2.3%2B-cyan?style=flat-square&logo=flask&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-magenta?style=flat-square)
-![Platform](https://img.shields.io/badge/platform-Windows%20·%20macOS%20·%20Linux-yellow?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Windows%20·%20macOS%20·%20Linux%20·%20Apple%20Silicon-yellow?style=flat-square)
 
 </div>
 
@@ -17,7 +18,7 @@
 
 **NEURO//FLUX** is a local-first, browser-based MRI viewer and automated brain segmentation pipeline. Drop in a NIfTI scan, hit **RUN SEGMENTATION**, and get a fully interactive multi-panel viewer with tissue overlays, 3D export, and longitudinal comparison — all running on your own machine with no data leaving it.
 
-Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harvard/MGH, PNAS 2023) — a contrast- and resolution-agnostic 3-D U-Net that works out-of-the-box on any MRI without retraining or fine-tuning. SynthSeg runs in its own isolated Python 3.8 / TensorFlow 2.2 environment (subprocess) to keep dependency conflicts away from the main server.
+Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harvard/MGH, PNAS 2023) — a contrast- and resolution-agnostic 3-D U-Net that works out-of-the-box on any MRI without retraining or fine-tuning. SynthSeg is bundled directly inside NeuroFlux and runs **in-process** on **TensorFlow 2.15**, with full **Apple Silicon (M1/M2/M3)** support via `tensorflow-metal`.
 
 ---
 
@@ -71,28 +72,23 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 │  · Mesh generation (trimesh + scikit-image)             │
 │  · STL / NIfTI export                                   │
 └────────────────────────┬────────────────────────────────┘
-                         │ subprocess
+                         │ direct Python call (in-process)
 ┌────────────────────────▼────────────────────────────────┐
 │  Segmentation Pipeline  (segment.py)                    │
-│  · Calls SynthSeg 2.0 inside isolated synthseg_env/     │
+│  · SynthSeg 2.0 — bundled as neuroflux.synthseg         │
+│  · TensorFlow 2.15 — Python 3.10/3.11                   │
+│  · Apple Silicon GPU via tensorflow-metal               │
 │  · Label remapping  (labels.py)                         │
 │  · Hemisphere split                                     │
 │  · QC + volume summary  (summary.json)                  │
-└────────────────────────┬────────────────────────────────┘
-                         │ subprocess
-┌────────────────────────▼────────────────────────────────┐
-│  SynthSeg 2.0  (synthseg_env/ — Python 3.8 + TF 2.2)    │
-│  · SynthSeg_predict.py                                  │
-│  · Models extracted from freesurfer/freesurfer:7.4.1    │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Environments**
+**Single environment — no isolated venv needed**
 
 | Env | Python | Purpose |
 |-----|--------|---------|
-| main (`neuro_venv`) | 3.10 | Flask server, nibabel, scipy, trimesh, pydicom |
-| `synthseg_env/` | 3.8 | SynthSeg + TensorFlow 2.2 (auto-created by `neuroflux-setup`) |
+| `neuro_venv` | 3.10 / 3.11 | Everything: Flask · SynthSeg · TensorFlow 2.15 |
 
 ---
 
@@ -100,13 +96,16 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 
 ### Prerequisites
 
-- **Python 3.10+** — [python.org](https://www.python.org/)
-- **uv** — fast Python package manager
-- **Git** — required for cloning SynthSeg
-- **Docker** — for extracting SynthSeg model weights (recommended)
-- ~**3 GB** free disk space
+- **Python 3.10 or 3.11** — [python.org](https://www.python.org/)
+  (TF 2.15 has no wheels for Python 3.12+)
+- **uv** — fast Python package manager (optional but recommended)
+- ~**2 GB** free disk space (model weights + TF)
 
-**Install uv:**
+> **Apple Silicon (M1/M2/M3)?**  
+> Install the `[metal]` extra after the main install for GPU acceleration:  
+> `pip install "neuroflux[metal]"`
+
+**Install uv (optional):**
 
 ```bash
 # macOS / Linux
@@ -124,59 +123,51 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 git clone https://github.com/D3njo/NeuroFlux.git
 cd NeuroFlux
 
-# Create main environment
-uv venv neuro_venv --python 3.10
+# Create environment with Python 3.11 (recommended)
+uv venv neuro_venv --python 3.11
+# — or without uv —
+python3.11 -m venv neuro_venv
 
-# Activate it
+# Activate
 source neuro_venv/bin/activate        # macOS / Linux
 neuro_venv\Scripts\activate           # Windows
 
-# Install NEUROFLUX
+# Install NeuroFlux (includes SynthSeg + TensorFlow 2.15)
 pip install -e .
+
+# Apple Silicon: add Metal GPU plugin
+pip install "neuroflux[metal]"        # M1/M2/M3 only
 ```
 
 ---
 
-### Step 2 — SynthSeg one-time setup
+### Step 2 — Download model weights
 
-This step creates the isolated SynthSeg environment and downloads model weights
-(~256 MB via Docker from `freesurfer/freesurfer:7.4.1`).
-
-**Docker must be running.**
+SynthSeg is now bundled inside NeuroFlux — no separate environment needed.
+Only the pre-trained model weights (~600 MB total) need to be downloaded once:
 
 ```bash
-# Install Python 3.8 via uv (required for SynthSeg / TF 2.2)
-uv python install 3.8
-
-# macOS / Linux
-neuroflux-setup --python $(uv python find 3.8)
-
-# Windows (PowerShell)
-neuroflux-setup --python (uv python find 3.8)
-
-# Windows (cmd)
-for /f "delims=" %i in ('uv python find 3.8') do set PY38=%i
-neuroflux-setup --python "%PY38%"
+neuroflux-setup
 ```
 
 <details>
-<summary>▸ No Docker? Manual model installation</summary>
+<summary>▸ Manual model installation (offline)</summary>
 
-On a machine that has Docker, run:
+Place the following `.h5` files into the `models/` folder at the repository root:
 
-```bash
-mkdir -p ~/synthseg_models
-docker run --rm \
-  -v ~/synthseg_models:/output \
-  freesurfer/freesurfer:7.4.1 \
-  bash -c "cp /usr/local/freesurfer/models/synthseg_2.0.h5 /output/ && \
-           cp /usr/local/freesurfer/models/synthseg_robust_2.0.h5 /output/"
+```
+models/
+├── synthseg_1.0.h5
+├── synthseg_2.0.h5
+├── synthseg_parc_2.0.h5
+├── synthseg_qc_2.0.h5
+└── synthseg_robust_2.0.h5
 ```
 
-Copy the files to `src/neuroflux/synthseg_repo/models/`, then run setup skipping the model download:
+Then run:
 
 ```bash
-neuroflux-setup --python <path/to/python3.8> --skip-models
+neuroflux-setup --skip-models   # verify paths without downloading
 ```
 
 </details>
@@ -216,18 +207,27 @@ neuroflux-segment src/neuroflux/data/default_t1.nii
 
 ```
 NeuroFlux/
+├── models/                      # model weights (downloaded by neuroflux-setup)
+│   ├── synthseg_2.0.h5
+│   ├── synthseg_robust_2.0.h5
+│   └── ...
 ├── src/
 │   └── neuroflux/
 │       ├── __init__.py          # package version
 │       ├── server.py            # Flask bridge server (port 5050)
 │       ├── segment.py           # segmentation pipeline CLI + API
 │       ├── labels.py            # FreeSurfer → NEUROFLUX label mapping
-│       ├── setup_synthseg.py    # one-time SynthSeg environment setup
+│       ├── setup_synthseg.py    # downloads model weights on first run
+│       ├── synthseg/            # SynthSeg 2.0 bundled (TF 2.15 / tf.keras)
+│       │   ├── predict_synthseg.py
+│       │   ├── ext/lab2im/      # image generation utilities
+│       │   ├── ext/neuron/      # U-Net layers and models
+│       │   └── data/labels_classes_priors/   # label .npy files (bundled)
 │       └── data/
 │           ├── neuroflux.html   # full browser UI (NiiVue + Three.js)
 │           └── default_t1.nii  # bundled demo scan
+├── tests/                       # pytest suite (fast + TF-backed)
 ├── pyproject.toml               # build config + dependencies
-├── .gitignore
 └── README.md
 ```
 
@@ -235,8 +235,6 @@ NeuroFlux/
 
 ```
 src/neuroflux/
-├── synthseg_env/                # Python 3.8 venv — TF 2.2 + SynthSeg
-├── synthseg_repo/               # SynthSeg 2.0 source + model weights
 └── segmentation/                # output sessions
     └── <scan_stem>/
         ├── original.nii.gz      # 1 mm isotropic T1 resampled by SynthSeg
@@ -301,35 +299,34 @@ src/neuroflux/
 
 ## ⬡ DEPENDENCIES
 
-**Main environment (Python ≥ 3.10)**
+**Single environment (Python 3.10 / 3.11)**
 
 | Package | Purpose |
 |---------|---------|
+| `tensorflow 2.15` | SynthSeg inference (bundled) |
 | `flask` + `flask-cors` | Bridge HTTP server |
 | `nibabel` | NIfTI I/O |
 | `numpy` | Array operations |
 | `scipy` | Boundary refinement, resampling |
+| `h5py` | Load `.h5` model weights |
 | `scikit-image` | Marching cubes mesh generation |
 | `trimesh` | Mesh processing + STL export |
 | `pydicom` + `dicom2nifti` | DICOM import pipeline |
 
-**SynthSeg environment (Python 3.8, auto-created)**
+**Optional extras**
 
-| Package | Version | Notes |
-|---------|---------|-------|
-| `tensorflow` | 2.2.0 | Pinned — SynthSeg requirement |
-| `keras` | 2.3.1 | Pinned |
-| `protobuf` | 3.20.3 | Pinned — TF 2.2 compat |
-| `nibabel` | ≥ 3.2 | |
-| `numpy` | < 1.24 | TF 2.2 constraint |
+| Extra | Package | Purpose |
+|-------|---------|---------|
+| `[metal]` | `tensorflow-metal` | Apple Silicon (M1/M2/M3) GPU acceleration |
 
 ---
 
 ## ⬡ KNOWN ISSUES & NOTES
 
-- **Model weight downloads:** UCL Dropbox / MGH FTP links may be stale. Docker extraction from `freesurfer/freesurfer:7.4.1` is the recommended and most reliable method.
-- **Windows GPU:** TF 2.2 has no native Windows GPU support. Use WSL2 + CUDA for GPU acceleration.
-- **SynthSeg install warning:** `pip install -e` on `synthseg_repo` may emit a legacy `setup.py develop` deprecation warning — harmless.
+- **Python 3.12+:** TF 2.15 has no wheels for Python 3.12 or newer. Use Python 3.10 or 3.11. Support for 3.12+ will come once the Keras 3 migration is complete.
+- **Apple Silicon:** install `pip install "neuroflux[metal]"` for GPU acceleration. Without it, inference runs on CPU (~1 min/scan).
+- **Low RAM (≤ 8 GB):** TF memory growth is enabled by default — TF will not pre-allocate all available memory. Use `--threads 1` (default) and avoid running other heavy applications during inference.
+- **Windows GPU:** TF 2.15 supports CUDA on Windows. For CPU-only use, no extra setup is needed.
 - **`neuroflux.html` must be served via the Flask server**, not opened as `file://`. The server enforces CORS and handles all `/file`, `/segment`, and SSE endpoints.
 
 ---
