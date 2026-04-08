@@ -1,6 +1,2 @@
-from . import edit_tensors
-from . import edit_volumes
-from . import image_generator
-from . import lab2im_model
-from . import layers
-from . import utils
+# neuroflux.synthseg.ext.lab2im — inference-only subset of lab2im
+# image_generator.py has been removed (training-only).
