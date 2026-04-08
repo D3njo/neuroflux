@@ -704,6 +704,7 @@
 
         <div id="seg-btn-group" style="display:flex;flex-direction:column;gap:4px;margin-bottom:4px;">
           <button class="btn" id="btn-seg"        onclick="runSegmentation()">⬡ RUN SEGMENTATION</button>
+          <button class="btn" id="btn-fov-adjust" onclick="fovAdjust()" style="font-size:9px;padding:4px 8px;" title="Configure brain FOV crop before segmentation">✂ FOV CROP</button>
           <button class="btn" id="btn-cancel-seg" onclick="cancelSegmentation()" style="display:none;">✕ CANCEL</button>
         </div>
         <div id="seg-progress-wrap"><div id="seg-progress-bar"></div></div>
@@ -1657,6 +1658,9 @@ async function load(file) {
       id('btn-seg').disabled = false;
       id('btn-cancel-seg').style.display = 'none';
       id('btn-export3d').disabled = true;
+      // Reset FOV crop state for the new file
+      _fovOrigPath = null; _fovCroppedPath = null; _fovCropInfo = null;
+      _hideFovBanner();
     }
 
     prog(8, 'READING FILE…');
@@ -1731,11 +1735,54 @@ async function load(file) {
 
     setTimeout(() => document.getElementById('overlay').classList.add('hidden'), 400);
 
+    // Background: upload to server and analyse FOV so user can adjust before clicking run.
+    // Runs silently — if the server is not running yet, fails without impacting the viewer.
+    _fovOrigPath = null; _fovCroppedPath = null; _fovCropInfo = null;
+    _hideFovBanner();
+    _bgFovAnalyze(file);
+
   } catch(e) {
     console.error('load error:', e);
     showErr(e.message || String(e));
     document.getElementById('h-status').textContent = 'ERROR';
   }
+}
+
+async function _bgFovAnalyze(file) {
+  // Silently upload and analyse brain FOV in background after file load.
+  // Sets _fovOrigPath / _fovCroppedPath / _fovCropInfo so the user can
+  // review (and optionally adjust) before clicking RUN SEGMENTATION.
+  try {
+    await fetch(`${SEG_SERVER}/ping`, { signal: AbortSignal.timeout(1500) });
+  } catch { return; }  // server not running — skip, will be done at segment time
+  try {
+    let serverPath = file.path || null;
+    if (!serverPath) {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      const up = await fetch(`${SEG_SERVER}/upload`, { method: 'POST', body: fd });
+      if (!up.ok) return;
+      serverPath = (await up.json()).path;
+    }
+    _fovOrigPath = serverPath;
+
+    const res = await fetch(`${SEG_SERVER}/analyze_fov`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: serverPath }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.cropped) {
+      _fovCroppedPath = data.path;
+      _fovCropInfo    = data;
+      _showFovBanner(data);
+    } else {
+      // No large FOV — show the banner with a "no crop needed" note so user
+      // can still open Adjust for manual crop if desired.
+      _fovCropInfo = data;  // contains orig_shape for manual crop reference
+    }
+  } catch(e) { /* silently ignore network/parse errors */ }
 }
 
 function prog(pct, msg) {
@@ -3472,22 +3519,30 @@ function fovUndo() {
 }
 
 function fovAdjust() {
-  if (!_fovCropInfo && !_fovOrigPath) return;
   const info = _fovCropInfo;
-  const orig = _fovCropInfo?.orig_shape || [];
+  const orig = info?.orig_shape || [];
 
   const axSel   = id('fov-adj-axis');
   const startIn = id('fov-adj-start');
   const endIn   = id('fov-adj-end');
   const infoEl  = id('fov-modal-info');
 
-  if (axSel)   axSel.value   = info?.si_axis ?? 2;
+  // Pre-fill with current crop params (or safe defaults)
+  const axis = info?.si_axis ?? 2;
+  if (axSel)   axSel.value   = axis;
   if (startIn) startIn.value = info?.crop_start ?? 0;
-  if (endIn)   endIn.value   = info?.crop_end   ?? (orig[info?.si_axis ?? 2] ?? 256) - 1;
+  if (endIn)   endIn.value   = info?.crop_end   ?? (orig[axis] ?? 256) - 1;
 
   const shapeStr = orig.length ? `${orig[0]}×${orig[1]}×${orig[2]} vox` : '–';
-  if (infoEl) infoEl.textContent =
-    `Original size: ${shapeStr}. Edit axis and voxel range to crop, or click AUTO to re-run detection.`;
+  let hint = `Original scan: ${shapeStr}.`;
+  if (_fovCroppedPath && info) {
+    hint += ` Auto-crop removed ${info.removed_pct}% along ${_AXIS_NAMES[info.si_axis]}.`;
+  } else if (!_fovOrigPath) {
+    hint += ' Load a file and let it upload to the server first (or click AUTO to trigger now).';
+  } else {
+    hint += ' No large FOV detected. Use AUTO to re-run, or set a manual range.';
+  }
+  if (infoEl) infoEl.textContent = hint;
   id('fov-adj-status').textContent = '';
   id('fov-modal').style.display = 'flex';
 }
@@ -3497,8 +3552,12 @@ function _fovAdjClose() {
 }
 
 async function _fovAdjApply() {
-  const sourcePath = _fovOrigPath || _fovCroppedPath;
-  if (!sourcePath) { _fovAdjClose(); return; }
+  const sourcePath = _fovOrigPath;
+  if (!sourcePath) {
+    id('fov-adj-status').textContent = 'No file on server yet — close and load/upload the file first.';
+    id('fov-adj-status').style.color = 'var(--red)';
+    return;
+  }
 
   const axis  = parseInt(id('fov-adj-axis').value);
   const start = parseInt(id('fov-adj-start').value);
@@ -3626,54 +3685,71 @@ async function runSegmentation() {
   segVols   = {};
   segActive = false;
 
-  // Upload file — skip if already on server (e.g. DICOM conversion output)
+  // Upload file — skip if already uploaded at load time or already on server (DICOM)
   let inputPath;
   try {
-    if (_loadedFile.path) {
+    if (_fovOrigPath) {
+      // Already uploaded during background FOV analysis at file load
+      inputPath = _fovOrigPath;
+      _pendingInputPath = inputPath;
+      _segProg(5);
+    } else if (_loadedFile.path) {
       // File already exists on server (DICOM convert path) — use directly
       inputPath = _loadedFile.path;
+      _fovOrigPath = inputPath;
       _pendingInputPath = inputPath;
       _segProg(3);
+      // Run FOV analysis now (server was unavailable at load time)
+      _segStatus('Analysing brain FOV…');
+      try {
+        const fovRes = await fetch(`${SEG_SERVER}/analyze_fov`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: inputPath }),
+        });
+        if (fovRes.ok) {
+          const fovData = await fovRes.json();
+          if (fovData.cropped) {
+            _fovCroppedPath = fovData.path;
+            _fovCropInfo    = fovData;
+            _showFovBanner(fovData);
+          }
+        }
+      } catch(e) {}
+      _segProg(5);
     } else {
+      // Server was unavailable at load time — upload now and analyse FOV
       const fd = new FormData();
       fd.append('file', _loadedFile, _loadedFile.name);
       const upRes = await fetch(`${SEG_SERVER}/upload`, { method: 'POST', body: fd });
       if (!upRes.ok) throw new Error(`Upload HTTP ${upRes.status}`);
       inputPath = (await upRes.json()).path;
+      _fovOrigPath      = inputPath;
       _pendingInputPath = inputPath;
       _segProg(3);
+      _segStatus('Analysing brain FOV…');
+      try {
+        const fovRes = await fetch(`${SEG_SERVER}/analyze_fov`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: inputPath }),
+        });
+        if (fovRes.ok) {
+          const fovData = await fovRes.json();
+          if (fovData.cropped) {
+            _fovCroppedPath = fovData.path;
+            _fovCropInfo    = fovData;
+            _showFovBanner(fovData);
+          }
+        }
+      } catch(e) {}
+      _segProg(5);
     }
   } catch(e) {
     _segStatus('Upload failed: ' + e.message, true);
     id('btn-seg').disabled = false;
     return;
   }
-
-  // FOV analysis — detect and auto-crop neck/face FOV before TF starts
-  _fovOrigPath    = inputPath;
-  _fovCroppedPath = null;
-  _fovCropInfo    = null;
-  _hideFovBanner();
-  _segStatus('Analysing brain FOV…');
-  _segProg(4);
-  try {
-    const fovRes = await fetch(`${SEG_SERVER}/analyze_fov`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: inputPath }),
-    });
-    if (fovRes.ok) {
-      const fovData = await fovRes.json();
-      if (fovData.cropped) {
-        inputPath         = fovData.path;
-        _pendingInputPath = inputPath;
-        _fovCroppedPath   = inputPath;
-        _fovCropInfo      = fovData;
-        _showFovBanner(fovData);
-      }
-    }
-  } catch(e) { /* FOV analysis unavailable — proceed without pre-crop */ }
-  _segProg(5);
 
   // Check if previous segmentation exists
   try {
