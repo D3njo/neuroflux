@@ -3685,10 +3685,12 @@ function _fovDrawOverlay(cropInfo) {
   // nv1=AXIAL: Y(1,h) and X(0,v)
   // nv2=SAG:   Z(2,h) and Y(1,v)
   // nv3=COR:   Z(2,h) and X(0,v)
+  // Build spatial map dynamically from current axis assignments
+  const [_ap, _si, _lr] = _FOV_PANEL_AXIS;
   const _nvSpatial = {
-    nv1: {1:{dir:'h'}, 0:{dir:'v'}},  // AXIAL:    Y(AP)→h, X(LR)→v
-    nv2: {2:{dir:'h'}, 1:{dir:'v'}},  // SAGITTAL: Z(SI)→h, Y(AP)→v
-    nv3: {2:{dir:'h'}, 0:{dir:'v'}},  // CORONAL:  Z(SI)→h, X(LR)→v
+    nv1: {[_ap]:{dir:'h'}, [_lr]:{dir:'v'}},  // AXIAL:    AP→h, LR→v
+    nv2: {[_si]:{dir:'h'}, [_ap]:{dir:'v'}},  // SAGITTAL: SI→h, AP→v
+    nv3: {[_si]:{dir:'h'}, [_lr]:{dir:'v'}},  // CORONAL:  SI→h, LR→v
   };
   [['nv1',nv1],['nv2',nv2],['nv3',nv3]].forEach(([nid,nv]) => {
     const oc = _fovGetOverlay(nid, nv); if (!oc) return;
@@ -3834,6 +3836,10 @@ async function _fovLoadProfiles() {
     _FOV_PANEL_AXIS = [ap, si, lr];
     const axNames = ['X (L–R)', 'Y (A–P)', 'Z (S–I)'];
     _FOV_PANEL_NAME = [axNames[ap], axNames[si], axNames[lr]];
+    // Update static HTML labels
+    for (let p = 0; p < 3; p++) {
+      const el = id(`fov-pan-lbl-${p}`); if (el) el.textContent = ' · ' + _FOV_PANEL_NAME[p];
+    }
     // Init each panel's full range from shape; keep existing values if crop already set
     for (let p = 0; p < 3; p++) {
       const ax = _FOV_PANEL_AXIS[p];
