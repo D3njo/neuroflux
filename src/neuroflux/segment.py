@@ -253,11 +253,16 @@ def _crop_to_brain_fov(input_path: str, tmp_dir: str, margin_mm: float = 25.0) -
 
     # Skip if less than 10 % removed — not worth rewriting the file
     if (end - start + 1) >= 0.90 * data.shape[si_axis]:
+        del data, mask
         return input_path
 
     slices = [slice(None)] * 3
     slices[si_axis] = slice(start, end + 1)
-    cropped = data[tuple(slices)]
+    cropped = data[tuple(slices)].copy()
+
+    # Free full-resolution array before saving — critical on low-RAM systems
+    del data, mask
+    import gc; gc.collect()
 
     # Shift affine origin to account for removed slices
     new_affine = affine.copy()
@@ -267,6 +272,8 @@ def _crop_to_brain_fov(input_path: str, tmp_dir: str, margin_mm: float = 25.0) -
 
     out_path = os.path.join(tmp_dir, "brain_fov.nii.gz")
     nib.save(nib.Nifti1Image(cropped, new_affine, img.header), out_path)
+    del cropped
+    gc.collect()
     return out_path
 
 
@@ -582,6 +589,8 @@ def run_pipeline(
         seg_input = _crop_to_brain_fov(input_path, tmp)
         if seg_input != input_path:
             _emit("setup", 7, "Brain FOV detected — pre-cropped to skull region.")
+        # Ensure pre-crop arrays are released before TF allocates model memory
+        import gc; gc.collect()
 
         _run_synthseg(
             input_path=seg_input,
