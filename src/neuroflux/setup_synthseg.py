@@ -42,7 +42,7 @@ def _default_models_dir() -> pathlib.Path:
     if env:
         return pathlib.Path(env)
 
-    repo_models = (_HERE / ".." / ".." / ".." / "models").resolve()
+    repo_models = (_HERE / ".." / ".." / "models").resolve()
     # Use repo root when it already exists (editable install) or is writable
     try:
         repo_models.mkdir(parents=True, exist_ok=True)
