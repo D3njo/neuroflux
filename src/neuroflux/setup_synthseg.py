@@ -2,24 +2,25 @@
 NEURO//FLUX — SynthSeg 2.0 Setup  (setup_synthseg.py)
 ======================================================
 Run once before first use.  Creates an isolated Python venv containing
-SynthSeg and its exact TensorFlow/Keras dependencies -- separate from the
+SynthSeg and its modernised TensorFlow/Keras dependencies -- separate from the
 main NEUROFLUX environment to avoid TF version conflicts.
 
 What this script does
-  1. Creates synthseg_env/       -- isolated venv (Python 3.8 recommended)
-  2. Clones https://github.com/BBillot/SynthSeg into synthseg_repo/
+  1. Creates synthseg_env/       -- isolated venv (Python 3.10+)
+  2. Clones https://github.com/D3njo/SynthSeg into synthseg_repo/
   3. pip-installs SynthSeg + its dependencies inside the venv
+     On Apple Silicon (M1/M2/M3) tensorflow-metal is added automatically.
   4. Copies the pre-trained model weights from the local models/ folder
      into synthseg_repo/models/
 
 Usage
-  python setup_synthseg.py [--python /path/to/python3.8] [--skip-env] [--skip-models]
+  python setup_synthseg.py [--python /path/to/python3.10] [--skip-env] [--skip-models]
 
-  --python     Path to Python 3.8 interpreter (default: current interpreter)
+  --python     Path to Python 3.10+ interpreter (default: current interpreter)
   --skip-env   Skip venv creation + dependency install (jump straight to models)
   --skip-models  Skip model copy entirely
 
-Python 3.8 is required for SynthSeg 2.0's tensorflow==2.2.0 dependency.
+Python 3.10+ is required for the modernised SynthSeg fork (tensorflow==2.15).
 
 After setup:
   python segment.py <input.nii.gz>
@@ -36,7 +37,7 @@ import urllib.request
 SERVER_DIR        = os.path.dirname(os.path.abspath(__file__))
 ENV_DIR           = os.path.join(SERVER_DIR, "synthseg_env")
 REPO_DIR          = os.path.join(SERVER_DIR, "synthseg_repo")
-REPO_URL          = "https://github.com/BBillot/SynthSeg.git"
+REPO_URL          = "https://github.com/D3njo/SynthSeg.git"
 MODELS_DIR        = os.path.join(REPO_DIR, "models")
 LOCAL_MODELS_DIR  = os.path.join(SERVER_DIR, "..", "..", "models")
 
@@ -53,17 +54,23 @@ MODEL_FILES = [
     "synthseg_robust_2.0.h5",
 ]
 
-# pip requirements for SynthSeg inside its isolated venv
-# Exact versions required -- SynthSeg is pinned to TF 2.2 / Keras 2.3
+# pip requirements for the modernised D3njo/SynthSeg fork inside its isolated venv.
+# TF 2.15 is the last release with Keras 2.x (tf.keras) — supports Python 3.10+
+# and Apple Silicon via the optional tensorflow-metal plugin.
 VENV_REQUIREMENTS = [
-    "tensorflow==2.2.0",
-    "keras==2.3.1",
-    "nibabel>=3.2",
-    "numpy>=1.19,<1.24",    # TF 2.2 needs numpy < 1.24
-    "protobuf==3.20.3",     # TF 2.2 requires protobuf < 4
-    "matplotlib",
-    "scipy",
+    "tensorflow==2.15.*",
+    "numpy>=1.24,<2.0",
+    "scipy>=1.10",
+    "h5py>=3.8",
+    "nibabel>=5.0",
+    "matplotlib>=3.7",
+    "protobuf>=4.21,<5",
 ]
+
+# On Apple Silicon the Metal plugin enables GPU acceleration
+import platform as _platform
+if _platform.system() == "Darwin" and _platform.machine() == "arm64":
+    VENV_REQUIREMENTS.append("tensorflow-metal>=1.1")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -211,7 +218,7 @@ def main():
     p = argparse.ArgumentParser(description="NEUROFLUX — SynthSeg 2.0 Setup")
     p.add_argument(
         "--python", default=sys.executable,
-        help="Path to Python 3.8 interpreter (default: current interpreter)",
+        help="Path to Python 3.10+ interpreter (default: current interpreter)",
     )
     p.add_argument(
         "--skip-models", action="store_true",
@@ -230,13 +237,17 @@ def main():
     )
     py_ver = _ver_result.stdout.strip() or _ver_result.stderr.strip()
     print(f"Version: {py_ver}")
-    if "3.8" not in py_ver:
-        print(
-            "\nWARNING: SynthSeg 2.0 requires Python 3.8 for tensorflow==2.2.0.\n"
-            "Your interpreter reports a different version.  Setup will continue\n"
-            "but TF installation may fail.  Consider:\n"
-            "  python setup_synthseg.py --python /path/to/python3.8\n"
-        )
+    import re as _re
+    _ver_match = _re.search(r"Python (\d+)\.(\d+)", py_ver)
+    if _ver_match:
+        _major, _minor = int(_ver_match.group(1)), int(_ver_match.group(2))
+        if (_major, _minor) < (3, 10):
+            print(
+                "\nWARNING: The modernised SynthSeg fork requires Python 3.10+.\n"
+                "Your interpreter reports a different version.  Setup will continue\n"
+                "but TF installation may fail.  Consider:\n"
+                "  python setup_synthseg.py --python /path/to/python3.10\n"
+            )
 
     if not args.skip_env:
         step_create_venv(base_python)
@@ -249,7 +260,7 @@ def main():
     step_verify()
 
     print("\n" + "="*60)
-    print("Setup complete.")
+    print("Setup complete.  (SynthSeg fork: D3njo/SynthSeg, TF 2.15)")
     print(f"  venv:   {ENV_DIR}")
     print(f"  repo:   {REPO_DIR}")
     print(f"  models: {MODELS_DIR}")
