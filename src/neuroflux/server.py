@@ -1030,212 +1030,234 @@ def export3d():
             nib.save(nib.Nifti1Image(combined, affine, header), out_path)
             saved.append(out_path)
 
-    # ── STL export — per-tissue + combined ──────────────────────────────────
+        return jsonify({"saved": saved, "dir": out_dir})
+
+    # ── STL export — streaming SSE progress ─────────────────────────────────
     elif fmt == "stl":
-        try:
-            import trimesh
-            from scipy.ndimage import gaussian_filter
-            from scipy.ndimage import label as nd_label
-            from skimage.measure import marching_cubes
-            from trimesh import smoothing as tri_smooth
-        except ImportError as e:
-            return jsonify({"error": f"Missing dependency: {e}"}), 500
+        def _stl_gen():
+            def _sse(pct, msg):
+                return f'data: {json.dumps({"pct": pct, "msg": msg})}\n\n'
 
-        stl_sigma          = float(body.get("stl_sigma",          0.5))
-        stl_taubin         = int(body.get("stl_taubin",           10))
-        stl_max_faces      = int(body.get("stl_max_faces",        300_000))
-        stl_hollow         = bool(body.get("stl_hollow",          False))
-        stl_wall_mm        = float(body.get("stl_wall_mm",        5.0))
-        combined_only        = bool(body.get("combined_only",         True))
-
-        stl_per_tissue     = not combined_only  # if combined_only, skip per-tissue
-        stl_combined       = bool(body.get("stl_combined",        True))
-        stl_scale          = float(body.get("stl_scale",          1.0))
-        stl_scale          = max(0.1, min(10.0, stl_scale))
-
-        vox2mm = affine[:3, :3]
-        origin = affine[:3,  3]
-        vox_size = float(np.abs(np.diag(affine[:3, :3])).mean())
-
-        # ── Tissue params: conservative sigma + Taubin only ─────────────
-        # NO morphological ops, NO HC — just Gaussian + Taubin (proven in v2)
-        TISSUE_SMOOTH = {
-            1: {"sigma": 0.8, "taubin": 15, "name": "csf"},
-            2: {"sigma": 0.75, "taubin": 12, "name": "gm"},
-            3: {"sigma": 0.8, "taubin": 15, "name": "wm"},
-            4: {"sigma": 0.8, "taubin": 15, "name": "deep_gm"},
-            5: {"sigma": 0.9, "taubin": 18, "name": "brainstem"},
-            6: {"sigma": 0.8, "taubin": 15, "name": "cerebellum"},
-        }
-
-
-
-        def _make_mesh(binary_mask, tissue_params):
-            """
-            Generate a print-ready mesh. Proven simple pipeline:
-            Gaussian blur → Marching Cubes → Taubin smooth → decimate
-            NO morphological operations (they destroy thin structures like WM).
-            """
-            from scipy.ndimage import binary_erosion, generate_binary_structure
-
-            tissue_name = tissue_params.get("name", "unknown")
-            voxel_count = int(binary_mask.sum())
-
-            if voxel_count < 100:
-                print(f"  [STL] {tissue_name}: skip, only {voxel_count} voxels", flush=True)
-                return None
-
-            print(f"  [STL] {tissue_name}: {voxel_count:,} voxels", flush=True)
-
-            mask = binary_mask.astype(np.float32)
-
-            # ── 1. Optional hollowing ────────────────────────────────────
-            # Strategy: generate outer mesh + inner (eroded) mesh separately,
-            # then combine into a watertight shell — avoids holes at thin regions.
-            hollow_inner_mesh = None
-            if stl_hollow:
-                struct   = generate_binary_structure(3, 1)
-                erode_r  = max(1, int(round(stl_wall_mm / vox_size)))
-                bm       = mask > 0
-                eroded   = binary_erosion(bm, structure=struct,
-                                          iterations=erode_r, border_value=0)
-                # Only hollow where inner volume actually exists (avoids holes)
-                if eroded.sum() > 100:
-                    inner_mask = eroded.astype(np.float32)
-                    inner_smooth = gaussian_filter(inner_mask, sigma=max(0.4, tissue_params.get("sigma", 0.8)))
-                    if inner_smooth.max() >= 0.3:
-                        try:
-                            iv, ifc, _, _ = marching_cubes(inner_smooth, level=0.5)
-                            iv_mm = (iv @ vox2mm.T) + origin
-                            hollow_inner_mesh = trimesh.Trimesh(vertices=iv_mm, faces=ifc, process=True)
-                            # Flip normals so inner surface faces inward
-                            hollow_inner_mesh.invert()
-                        except Exception as e:
-                            print(f"  [STL] hollow inner mesh failed: {e}", flush=True)
-                            hollow_inner_mesh = None
-
-            # ── 2. Gaussian blur — anisotropic per voxel size ────────────
-            base_sigma = tissue_params.get("sigma", stl_sigma)
-            eff_sigma  = max(0.3, base_sigma)
-            # Scale sigma per axis by voxel thickness so physical smoothing
-            # is uniform — hides staircase on thick-slice CT scans
             try:
-                vox_s   = np.abs(np.linalg.norm(vox2mm, axis=0))   # [dx,dy,dz] mm
-                min_vox = float(np.min(vox_s[vox_s > 0])) or 1.0
-                sigma_ax = [eff_sigma * float(vox_s[i]) / min_vox for i in range(3)]
-            except Exception:
-                sigma_ax = eff_sigma
-            smoothed = gaussian_filter(mask, sigma=sigma_ax)
+                import trimesh as _trimesh
+                from scipy.ndimage import gaussian_filter
+                from scipy.ndimage import label as nd_label
+                from skimage.measure import marching_cubes
+                from trimesh import smoothing as tri_smooth
+            except ImportError as e:
+                yield f'data: {json.dumps({"status": "error", "error": f"Missing dependency: {e}"})}\n\n'
+                return
 
-            if smoothed.max() < 0.3:
-                print(f"  [STL] {tissue_name}: no surface at sigma={eff_sigma:.1f}", flush=True)
-                return None
+            _stl_sigma     = float(body.get("stl_sigma",     0.5))
+            _stl_taubin    = int(body.get("stl_taubin",      10))
+            _stl_max_faces = int(body.get("stl_max_faces",   300_000))
+            _stl_hollow    = bool(body.get("stl_hollow",     False))
+            _stl_wall_mm   = float(body.get("stl_wall_mm",   5.0))
+            _combined_only = bool(body.get("combined_only",  True))
+            _stl_per_tissue = not _combined_only
+            _stl_combined  = bool(body.get("stl_combined",   True))
+            _stl_scale     = max(0.1, min(10.0, float(body.get("stl_scale", 1.0))))
 
-            # ── 3. Marching Cubes ────────────────────────────────────────
-            try:
-                verts, faces_mc, _, _ = marching_cubes(smoothed, level=0.5)
-            except Exception as e:
-                print(f"  [STL] {tissue_name}: marching cubes failed: {e}", flush=True)
-                return None
+            vox2mm   = affine[:3, :3]
+            origin   = affine[:3,  3]
+            vox_size = float(np.abs(np.diag(affine[:3, :3])).mean())
 
-            verts_mm = (verts @ vox2mm.T) + origin
-            mesh = trimesh.Trimesh(vertices=verts_mm, faces=faces_mc, process=True)
+            TISSUE_SMOOTH = {
+                1: {"sigma": 0.8,  "taubin": 15, "name": "csf"},
+                2: {"sigma": 0.75, "taubin": 12, "name": "gm"},
+                3: {"sigma": 0.8,  "taubin": 15, "name": "wm"},
+                4: {"sigma": 0.8,  "taubin": 15, "name": "deep_gm"},
+                5: {"sigma": 0.9,  "taubin": 18, "name": "brainstem"},
+                6: {"sigma": 0.8,  "taubin": 15, "name": "cerebellum"},
+            }
 
-            # ── 3b. Keep only largest connected component (removes spikes) ─
-            components = mesh.split(only_watertight=False)
-            if len(components) > 1:
-                mesh = max(components, key=lambda m: len(m.faces))
+            yield _sse(3, "Preparing mesh pipeline…")
 
-            print(f"  [STL] {tissue_name}: {len(mesh.faces):,} raw faces", flush=True)
+            def _make_mesh_gen(binary_mask, tissue_params):
+                """
+                Generator: yields (local_pct 0–94, msg) for each pipeline step.
+                Returns the finished mesh via StopIteration.value (return mesh).
+                Returns None if the mask is too small to mesh.
+                """
+                from scipy.ndimage import binary_erosion, generate_binary_structure
 
-            # ── 4. Surface smoothing (Taubin — proven, stable) ───────────
-            tau_iter = tissue_params.get("taubin", 15)
-            tau_iter = max(5, min(50, tau_iter))
-            try:
-                tri_smooth.filter_taubin(mesh, lamb=0.5, nu=0.53,
-                                          iterations=tau_iter)
-            except Exception:
-                pass
+                name        = tissue_params.get("name", "tissue")
+                voxel_count = int(binary_mask.sum())
+                if voxel_count < 100:
+                    return None
 
-            # ── 5. Basic mesh cleanup ────────────────────────────────────
-            try:
-                trimesh.repair.fix_normals(mesh)
-            except Exception:
-                pass
+                mask = binary_mask.astype(np.float32)
 
-            # ── 5b. Combine outer + inner shell for hollow models ────────
-            if stl_hollow and hollow_inner_mesh is not None:
+                # ── 1. Optional hollowing ────────────────────────────────
+                hollow_inner = None
+                if _stl_hollow:
+                    struct  = generate_binary_structure(3, 1)
+                    erode_r = max(1, int(round(_stl_wall_mm / vox_size)))
+                    eroded  = binary_erosion(mask > 0, structure=struct,
+                                             iterations=erode_r, border_value=0)
+                    if eroded.sum() > 100:
+                        inner_sm = gaussian_filter(eroded.astype(np.float32),
+                                                   sigma=max(0.4, tissue_params.get("sigma", 0.8)))
+                        if inner_sm.max() >= 0.3:
+                            try:
+                                iv, ifc, _, _ = marching_cubes(inner_sm, level=0.5)
+                                iv_mm = (iv @ vox2mm.T) + origin
+                                hollow_inner = _trimesh.Trimesh(vertices=iv_mm, faces=ifc, process=True)
+                                hollow_inner.invert()
+                            except Exception:
+                                hollow_inner = None
+
+                # ── 2. Gaussian blur ─────────────────────────────────────
+                yield 8, f"{name} — gaussian blur…"
+                eff_sigma = max(0.3, tissue_params.get("sigma", _stl_sigma))
                 try:
-                    trimesh.repair.fix_normals(hollow_inner_mesh)
-                    mesh = trimesh.util.concatenate([mesh, hollow_inner_mesh])
-                    trimesh.repair.fix_normals(mesh)
-                except Exception as e:
-                    print(f"  [STL] hollow combine failed: {e}", flush=True)
+                    vox_s   = np.abs(np.linalg.norm(vox2mm, axis=0))
+                    min_vox = float(np.min(vox_s[vox_s > 0])) or 1.0
+                    sigma_ax = [eff_sigma * float(vox_s[i]) / min_vox for i in range(3)]
+                except Exception:
+                    sigma_ax = eff_sigma
+                smoothed = gaussian_filter(mask, sigma=sigma_ax)
+                if smoothed.max() < 0.3:
+                    return None
 
-            # ── 6. Decimation ────────────────────────────────────────────
-            if len(mesh.faces) > stl_max_faces:
+                # ── 3. Marching cubes ────────────────────────────────────
+                yield 30, f"{name} — marching cubes…"
                 try:
-                    mesh = mesh.simplify_quadric_decimation(
-                        face_count=stl_max_faces)
+                    verts, faces_mc, _, _ = marching_cubes(smoothed, level=0.5)
+                except Exception:
+                    return None
+
+                verts_mm = (verts @ vox2mm.T) + origin
+                mesh = _trimesh.Trimesh(vertices=verts_mm, faces=faces_mc, process=True)
+                comps = mesh.split(only_watertight=False)
+                if len(comps) > 1:
+                    mesh = max(comps, key=lambda m: len(m.faces))
+
+                # ── 4. Taubin smoothing ──────────────────────────────────
+                tau_iter = max(5, min(50, tissue_params.get("taubin", 15)))
+                yield 52, f"{name} — taubin smoothing ({tau_iter} iter)…"
+                try:
+                    tri_smooth.filter_taubin(mesh, lamb=0.5, nu=0.53, iterations=tau_iter)
                 except Exception:
                     pass
 
-            # ── 7. Post-decimation polish (skip if no taubin requested) ──
-            if tau_iter > 0:
+                # ── 5. Mesh cleanup + hollow combine ─────────────────────
+                yield 68, f"{name} — mesh cleanup…"
                 try:
-                    tri_smooth.filter_taubin(mesh, lamb=0.3, nu=0.31, iterations=min(3, tau_iter))
+                    _trimesh.repair.fix_normals(mesh)
                 except Exception:
                     pass
+                if _stl_hollow and hollow_inner is not None:
+                    try:
+                        _trimesh.repair.fix_normals(hollow_inner)
+                        mesh = _trimesh.util.concatenate([mesh, hollow_inner])
+                        _trimesh.repair.fix_normals(mesh)
+                    except Exception:
+                        pass
 
-            # ── 8. Scale ─────────────────────────────────────────────────
-            if abs(stl_scale - 1.0) > 0.01:
-                mesh.vertices *= stl_scale
+                # ── 6. Decimation ────────────────────────────────────────
+                yield 78, f"{name} — decimation ({len(mesh.faces):,} faces)…"
+                if len(mesh.faces) > _stl_max_faces:
+                    try:
+                        mesh = mesh.simplify_quadric_decimation(face_count=_stl_max_faces)
+                    except Exception:
+                        pass
+                if tau_iter > 0:
+                    try:
+                        tri_smooth.filter_taubin(mesh, lamb=0.3, nu=0.31,
+                                                 iterations=min(3, tau_iter))
+                    except Exception:
+                        pass
+                if abs(_stl_scale - 1.0) > 0.01:
+                    mesh.vertices *= _stl_scale
 
-            print(f"  [STL] {tissue_name}: done, {len(mesh.faces):,} faces", flush=True)
-            return mesh
+                yield 94, f"{name} — {len(mesh.faces):,} faces"
+                return mesh
 
-        # ── Per-tissue STL export ────────────────────────────────────────
-        if stl_per_tissue:
-            for key, lbl in label_items:
-                mask = (seg_arr == lbl).astype(np.uint8)
+            def _drive(binary_mask, tissue_params, start_pct, end_pct):
+                """Run _make_mesh_gen, remap local pcts → [start_pct, end_pct]."""
+                span = max(1, end_pct - start_pct)
+                gen  = _make_mesh_gen(binary_mask, tissue_params)
+                mesh = None
+                try:
+                    while True:
+                        local_pct, msg = next(gen)
+                        yield start_pct + int(local_pct / 100 * span), msg
+                except StopIteration as e:
+                    mesh = e.value
+                return mesh  # StopIteration.value for the caller
 
-                # Remove excluded connected components
+            saved = []
+
+            # ── Per-tissue meshes ────────────────────────────────────────
+            if _stl_per_tissue:
+                n = len(label_items)
+                for i, (key, lbl) in enumerate(label_items):
+                    mask = (seg_arr == lbl).astype(np.uint8)
+                    if excluded_comps:
+                        comp_labeled, _ = nd_label(mask)
+                        for cid in excluded_comps:
+                            mask[comp_labeled == cid] = 0
+                    if mask.sum() == 0:
+                        continue
+
+                    base = TISSUE_SMOOTH.get(lbl, {"sigma": 0.8, "taubin": 15})
+                    tp   = {**base,
+                            "sigma":  _stl_sigma if _stl_sigma > 0 else base.get("sigma", 0.8),
+                            "taubin": _stl_taubin, "label": lbl, "name": key}
+
+                    s_pct = 10 + int(i / (n + 1) * 70)
+                    e_pct = 10 + int((i + 1) / (n + 1) * 70)
+                    drv   = _drive(mask > 0, tp, s_pct, e_pct)
+                    try:
+                        while True:
+                            pct, msg = next(drv)
+                            yield _sse(pct, msg)
+                    except StopIteration as e:
+                        mesh = e.value
+
+                    if mesh is not None:
+                        out_path = os.path.join(out_dir, f"{ts}_{key}.stl")
+                        mesh.export(out_path)
+                        saved.append(out_path)
+
+            # ── Combined mesh ────────────────────────────────────────────
+            if _stl_combined and len(label_items) >= 1:
+                combined_mask = np.zeros_like(seg_arr, dtype=np.uint8)
+                for _, lbl in label_items:
+                    combined_mask[seg_arr == lbl] = 1
                 if excluded_comps:
-                    comp_labeled, _ = nd_label(mask)
+                    comp_labeled, _ = nd_label(combined_mask)
                     for cid in excluded_comps:
-                        mask[comp_labeled == cid] = 0
+                        combined_mask[comp_labeled == cid] = 0
 
-                if mask.sum() == 0:
-                    continue
+                n_total = len(label_items) + 1 if _stl_per_tissue else 1
+                i_comb  = len(label_items) if _stl_per_tissue else 0
+                s_pct   = 10 + int(i_comb / n_total * 70)
 
-                base = TISSUE_SMOOTH.get(lbl, {"sigma": 0.8, "taubin": 15})
-                tp = {**base, "sigma": stl_sigma if stl_sigma > 0 else base.get("sigma", 0.8), "taubin": stl_taubin, "label": lbl, "name": key}
+                combined_params = {"sigma": _stl_sigma, "taubin": _stl_taubin, "name": "combined"}
+                drv = _drive(combined_mask > 0, combined_params, s_pct, 82)
+                try:
+                    while True:
+                        pct, msg = next(drv)
+                        yield _sse(pct, msg)
+                except StopIteration as e:
+                    mesh_combined = e.value
 
-                mesh = _make_mesh(mask > 0, tp)
-                if mesh is not None:
-                    tissue_name = key
-                    out_path = os.path.join(out_dir, f"{ts}_{tissue_name}.stl")
-                    mesh.export(out_path)
+                if mesh_combined is not None:
+                    yield _sse(88, "Saving STL…")
+                    out_path = os.path.join(out_dir, f"{ts}_combined.stl")
+                    mesh_combined.export(out_path)
                     saved.append(out_path)
 
-        # ── Combined STL (all selected tissues merged) ───────────────────
-        if stl_combined and len(label_items) >= 1:
-            combined_mask = np.zeros_like(seg_arr, dtype=np.uint8)
-            for _, lbl in label_items:
-                combined_mask[seg_arr == lbl] = 1
-            if excluded_comps:
-                comp_labeled, _ = nd_label(combined_mask)
-                for cid in excluded_comps:
-                    combined_mask[comp_labeled == cid] = 0
+            yield _sse(95, f"{len(saved)} file(s) ready.")
+            yield f'data: {json.dumps({"status": "done", "saved": saved, "dir": out_dir})}\n\n'
 
-            combined_params = {"sigma": stl_sigma, "taubin": stl_taubin, "name": "combined"}
-            mesh_combined = _make_mesh(combined_mask > 0, combined_params)
-            if mesh_combined is not None:
-                out_path = os.path.join(out_dir, f"{ts}_combined.stl")
-                mesh_combined.export(out_path)
-                saved.append(out_path)
-
-    return jsonify({"saved": saved, "dir": out_dir})
+        return Response(
+            _stl_gen(),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
 
 @app.post("/screenshot")

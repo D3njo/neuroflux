@@ -370,6 +370,9 @@
   #btn-export3d:disabled { opacity:0.3; cursor:not-allowed; }
   #export3d-status { font-family:var(--font-mono); font-size:9px; color:var(--textdim); margin-top:5px; min-height:12px; line-height:1.5; }
   #export3d-status.err { color:var(--red); }
+  #export3d-prog-wrap { height:2px; background:rgba(0,255,240,0.1); border-radius:1px; overflow:hidden; margin-top:6px; display:none; }
+  #export3d-prog-wrap.on { display:block; }
+  #export3d-prog-bar  { height:100%; width:0%; background:linear-gradient(90deg,var(--cyan),var(--magenta)); transition:width .35s; }
 
   /* 3D Preview modal */
   /* 3D Preview modal — centred, not full-screen */
@@ -871,6 +874,7 @@
               <label><input type="radio" name="fmt3d" id="fmt-stl"   value="stl"> STL</label>
             </div>
             <button class="btn" id="btn-export3d" onclick="onExport3dClick()" disabled>⬡ SAVE 3D FILES</button>
+            <div id="export3d-prog-wrap"><div id="export3d-prog-bar"></div></div>
             <div id="export3d-status"></div>
           </div>
         </div>
@@ -3815,6 +3819,15 @@ function _updateExportBtn() {
   if (btn) btn.disabled = !(segActive && anyChecked);
 }
 
+function _exportProg(pct) {
+  const wrap = id('export3d-prog-wrap');
+  const bar  = id('export3d-prog-bar');
+  if (!wrap || !bar) return;
+  if (pct <= 0) { wrap.classList.remove('on'); bar.style.width = '0%'; return; }
+  wrap.classList.add('on');
+  bar.style.width = Math.min(100, pct) + '%';
+}
+
 function _exportStatus(msg, isErr) {
   const el = id('export3d-status');
   if (!el) return;
@@ -4020,46 +4033,87 @@ async function export3dFiles(stlParams = {}) {
   }
 
   id('btn-export3d').disabled = true;
+  _exportProg(0);
   _exportStatus(`Exporting ${Object.keys(labels).length} tissue(s) as ${fmt.toUpperCase()}…`);
 
+  const exTs   = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+  const reqBody = JSON.stringify({
+    seg_path:  _p3dFrozenSegPath || _activeSegPath(),
+    labels,
+    format:    fmt,
+    filename:  _loadedFile?.name || '',
+    timestamp: exTs,
+    stl_sigma:           stlParams.sigma              ?? 0.5,
+    stl_taubin:          stlParams.taubin             ?? 10,
+    stl_max_faces:       stlParams.max_faces          ?? 300000,
+    excluded_components: stlParams.excluded_components ?? [],
+    combined_only:       stlParams.combined_only      ?? true,
+    stl_hollow:          stlParams.hollow             ?? false,
+    stl_wall_mm:         stlParams.wall_mm            ?? 5.0,
+  });
+
   try {
-    const exTs = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
     const res = await fetch(`${SEG_SERVER}/export3d`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        seg_path:  _p3dFrozenSegPath || _activeSegPath(),
-        labels,
-        format:    fmt,
-        filename:  _loadedFile?.name || '',
-        timestamp: exTs,
-        stl_sigma:           stlParams.sigma              ?? 0.5,
-        stl_taubin:          stlParams.taubin             ?? 10,
-        stl_max_faces:       stlParams.max_faces          ?? 300000,
-        excluded_components: stlParams.excluded_components ?? [],
-        combined_only:       stlParams.combined_only      ?? true,
-
-        stl_hollow:          stlParams.hollow             ?? false,
-        stl_wall_mm:         stlParams.wall_mm            ?? 5.0,
-        stl_sulci_preserve:  stlParams.sulci_preserve     ?? true,
-        stl_sulci_strength:  stlParams.sulci_strength     ?? 0.55,
-        stl_hc_iterations:   stlParams.hc_iterations      ?? 12,
-      }),
+      body: reqBody,
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `HTTP ${res.status}`);
     }
-    _p3dFrozenSegPath = null;  // clear after successful export
-    const data = await res.json();
-    const n    = data.saved?.length || 0;
-    _exportStatus(`${n} file${n !== 1 ? 's' : ''} saved → 3d-files/`);
-    if (fmt === 'stl' && data.saved?.length) {
-      const combinedPath = data.saved.find(p => p.endsWith('_combined.stl')) || data.saved[data.saved.length - 1];
-      const fname = combinedPath.split(/[/\\]/).pop();
-      try { await _openStlViewer(combinedPath, fname); } catch(e) { console.warn('STL viewer:', e); }
+
+    // ── STL: read streaming SSE response ──────────────────────────────
+    if (fmt === 'stl') {
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buf     = '';
+      let   finalData = null;
+
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        // SSE lines end with \n\n; split on every complete event
+        const parts = buf.split('\n\n');
+        buf = parts.pop();          // keep incomplete tail
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data: ')) continue;
+          let msg;
+          try { msg = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (msg.pct  !== undefined) _exportProg(msg.pct);
+          if (msg.msg  !== undefined) _exportStatus(msg.msg);
+          if (msg.status === 'error') throw new Error(msg.error || 'Export error');
+          if (msg.status === 'done')  { finalData = msg; break outer; }
+        }
+      }
+
+      if (!finalData) throw new Error('Stream ended without done event');
+      _p3dFrozenSegPath = null;
+      _exportProg(100);
+      const n = finalData.saved?.length || 0;
+      _exportStatus(`${n} file${n !== 1 ? 's' : ''} saved → 3d-files/`);
+      if (finalData.saved?.length) {
+        const combinedPath = finalData.saved.find(p => p.endsWith('_combined.stl'))
+                          || finalData.saved[finalData.saved.length - 1];
+        const fname = combinedPath.split(/[/\\]/).pop();
+        try { await _openStlViewer(combinedPath, fname); } catch(e) { console.warn('STL viewer:', e); }
+      }
+
+    // ── NIfTI: plain JSON response (unchanged) ─────────────────────────
+    } else {
+      _p3dFrozenSegPath = null;
+      const data = await res.json();
+      const n    = data.saved?.length || 0;
+      _exportStatus(`${n} file${n !== 1 ? 's' : ''} saved → 3d-files/`);
     }
+
   } catch(e) {
+    _exportProg(0);
     _exportStatus('Export failed: ' + e.message, true);
   } finally {
     _updateExportBtn();
