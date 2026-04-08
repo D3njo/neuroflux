@@ -194,6 +194,31 @@ def _check_models(robust: bool):
         )
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _has_swap() -> bool:
+    """Return True if the system has any swap space configured (Linux/macOS/Windows)."""
+    try:
+        # Linux: read /proc/meminfo — no external dependencies
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("SwapTotal:"):
+                    return int(line.split()[1]) > 0
+    except OSError:
+        pass
+    try:
+        # macOS: sysctl vm.swapusage
+        import subprocess
+        out = subprocess.check_output(["sysctl", "vm.swapusage"], text=True, timeout=3)
+        # "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M"
+        total_str = out.split("total =")[1].split()[0].rstrip("M")
+        return float(total_str) > 0
+    except Exception:
+        pass
+    # Windows or unknown — assume swap exists to avoid unnecessary cropping
+    return True
+
+
 # ── SynthSeg direct call ──────────────────────────────────────────────────────
 
 def _run_synthseg(
@@ -221,14 +246,24 @@ def _run_synthseg(
     if low_memory:
         # fast=True: skip the flipped-image second pass (halves peak activation RAM)
         fast = True
-        # crop to 160³: covers full brain (typical brain ~170mm) while reducing tensor vs 256³
-        # 128 was too small and cut off top/sides of the brain
-        cropping = 160
         # skip QC model and posteriors to avoid materializing 95-class posterior tensor (~800 MB)
-        do_qc_path      = None
-        do_posteriors   = None
-        _emit("synthseg", 8,
-              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop160+no-QC+no-posteriors, {threads} thread(s))…")
+        do_qc_path    = None
+        do_posteriors = None
+
+        # Only crop when the system has no swap space.
+        # With swap the OS can page out tensors to disk instead of OOM-killing the process,
+        # so cropping (which cuts off parts of large brains) is unnecessary.
+        swap_available = _has_swap()
+        if swap_available:
+            cropping = None
+            _emit("synthseg", 8,
+                  f"SynthSeg 2.0 ({mode}, low_memory: fast+no-QC+no-posteriors, {threads} thread(s))…")
+        else:
+            # No swap: crop to 160³ as safety net against OOM-kill.
+            # 160mm covers a typical brain (~170mm); larger brains may be clipped at edges.
+            cropping = 160
+            _emit("synthseg", 8,
+                  f"SynthSeg 2.0 ({mode}, low_memory: fast+crop160+no-QC+no-posteriors [no swap], {threads} thread(s))…")
     else:
         cropping      = None
         do_qc_path    = qc_path
