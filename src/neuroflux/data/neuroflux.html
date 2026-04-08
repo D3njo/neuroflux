@@ -710,6 +710,15 @@
         <div id="seg-status"></div>
         <div id="seg-eta" style="font-family:var(--font-mono);font-size:9px;color:var(--cyan);opacity:0.65;min-height:12px;margin-top:2px;letter-spacing:0.4px;"></div>
 
+        <!-- FOV crop notification banner -->
+        <div id="fov-banner" style="display:none;margin-top:6px;padding:5px 8px;background:rgba(0,255,240,0.07);border:1px solid rgba(0,255,240,0.25);border-radius:3px;font-family:var(--font-mono);font-size:9px;color:var(--cyan);line-height:1.5;">
+          <span id="fov-banner-msg"></span>
+          <span style="float:right;display:flex;gap:6px;">
+            <button onclick="fovAdjust()" style="background:none;border:1px solid currentColor;color:inherit;font-family:inherit;font-size:inherit;padding:1px 5px;cursor:pointer;border-radius:2px;">Adjust</button>
+            <button onclick="fovUndo()"   style="background:none;border:1px solid currentColor;color:inherit;font-family:inherit;font-size:inherit;padding:1px 5px;cursor:pointer;border-radius:2px;">Undo</button>
+          </span>
+        </div>
+
         <!-- Overlay toggles — shown after successful segmentation -->
         <div id="seg-layers-wrap" class="seg-layers-wrap">
           <div class="seg-ol-header">OVERLAY LAYERS</div>
@@ -1102,6 +1111,37 @@
     </div>
   </div>
 
+
+  <!-- FOV Adjust modal -->
+  <div id="fov-modal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;">
+    <div style="background:#0a0a0f;border:1px solid var(--cyan);padding:24px 28px;min-width:320px;max-width:420px;font-family:var(--font-mono);">
+      <h3 style="margin:0 0 12px;font-size:11px;letter-spacing:2px;color:var(--cyan);">FOV CROP SETTINGS</h3>
+      <p style="font-size:9px;color:var(--textdim);margin:0 0 14px;line-height:1.6;" id="fov-modal-info">–</p>
+      <div style="display:grid;gap:8px;margin-bottom:16px;">
+        <label style="font-size:9px;color:var(--textdim);">Axis
+          <select id="fov-adj-axis" style="margin-left:8px;background:#111;color:var(--cyan);border:1px solid #333;font-family:inherit;font-size:9px;padding:2px 4px;">
+            <option value="0">X (left-right)</option>
+            <option value="1">Y (anterior-posterior)</option>
+            <option value="2">Z (superior-inferior)</option>
+          </select>
+        </label>
+        <label style="font-size:9px;color:var(--textdim);">Start voxel
+          <input id="fov-adj-start" type="number" min="0" step="1"
+            style="margin-left:8px;width:70px;background:#111;color:var(--cyan);border:1px solid #333;font-family:inherit;font-size:9px;padding:2px 4px;">
+        </label>
+        <label style="font-size:9px;color:var(--textdim);">End voxel
+          <input id="fov-adj-end" type="number" min="0" step="1"
+            style="margin-left:8px;width:70px;background:#111;color:var(--cyan);border:1px solid #333;font-family:inherit;font-size:9px;padding:2px 4px;">
+        </label>
+      </div>
+      <div id="fov-adj-status" style="font-size:9px;color:var(--red);min-height:12px;margin-bottom:10px;"></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" onclick="_fovAdjApply()">⬡ APPLY CROP</button>
+        <button class="btn" onclick="_fovAdjAuto()"  title="Re-run auto-detection">↺ AUTO</button>
+        <button class="btn mg" onclick="_fovAdjClose()">✕ CANCEL</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Re-segment modal -->
   <div id="reseg-modal">
@@ -3402,6 +3442,133 @@ async function loadSession(outputs) {
 let _pendingInputPath = null;
 let _existingOutputs  = null;
 
+// FOV crop state
+let _fovOrigPath    = null;  // original uploaded path (before any FOV crop)
+let _fovCroppedPath = null;  // path to server-side FOV-cropped file (null = no crop)
+let _fovCropInfo    = null;  // {removed_pct, si_axis, orig_shape, crop_start, crop_end}
+
+const _AXIS_NAMES = ['X (left-right)', 'Y (anterior-posterior)', 'Z (superior-inferior)'];
+
+function _showFovBanner(info) {
+  const banner = id('fov-banner');
+  const msg    = id('fov-banner-msg');
+  if (!banner || !msg) return;
+  const axis = _AXIS_NAMES[info.si_axis] || `axis ${info.si_axis}`;
+  msg.textContent = `Brain FOV pre-cropped (${info.removed_pct}% removed, ${axis})`;
+  banner.style.display = '';
+}
+
+function _hideFovBanner() {
+  const banner = id('fov-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+function fovUndo() {
+  if (!_fovOrigPath) return;
+  _fovCroppedPath = null;
+  _fovCropInfo    = null;
+  _pendingInputPath = _fovOrigPath;
+  _hideFovBanner();
+}
+
+function fovAdjust() {
+  if (!_fovCropInfo && !_fovOrigPath) return;
+  const info = _fovCropInfo;
+  const orig = _fovCropInfo?.orig_shape || [];
+
+  const axSel   = id('fov-adj-axis');
+  const startIn = id('fov-adj-start');
+  const endIn   = id('fov-adj-end');
+  const infoEl  = id('fov-modal-info');
+
+  if (axSel)   axSel.value   = info?.si_axis ?? 2;
+  if (startIn) startIn.value = info?.crop_start ?? 0;
+  if (endIn)   endIn.value   = info?.crop_end   ?? (orig[info?.si_axis ?? 2] ?? 256) - 1;
+
+  const shapeStr = orig.length ? `${orig[0]}×${orig[1]}×${orig[2]} vox` : '–';
+  if (infoEl) infoEl.textContent =
+    `Original size: ${shapeStr}. Edit axis and voxel range to crop, or click AUTO to re-run detection.`;
+  id('fov-adj-status').textContent = '';
+  id('fov-modal').style.display = 'flex';
+}
+
+function _fovAdjClose() {
+  id('fov-modal').style.display = 'none';
+}
+
+async function _fovAdjApply() {
+  const sourcePath = _fovOrigPath || _fovCroppedPath;
+  if (!sourcePath) { _fovAdjClose(); return; }
+
+  const axis  = parseInt(id('fov-adj-axis').value);
+  const start = parseInt(id('fov-adj-start').value);
+  const end   = parseInt(id('fov-adj-end').value);
+
+  id('fov-adj-status').textContent = 'Applying crop…';
+  id('fov-adj-status').style.color = 'var(--cyan)';
+  try {
+    const res = await fetch(`${SEG_SERVER}/manual_crop`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: sourcePath, si_axis: axis, start_vox: start, end_vox: end}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    if (data.cropped) {
+      _fovCroppedPath = data.path;
+      _fovCropInfo    = data;
+      _pendingInputPath = data.path;
+      _showFovBanner(data);
+    } else {
+      _fovCroppedPath = null;
+      _fovCropInfo    = null;
+      _pendingInputPath = _fovOrigPath;
+      _hideFovBanner();
+    }
+    _fovAdjClose();
+  } catch(e) {
+    id('fov-adj-status').textContent = 'Error: ' + e.message;
+    id('fov-adj-status').style.color = 'var(--red)';
+  }
+}
+
+async function _fovAdjAuto() {
+  const sourcePath = _fovOrigPath;
+  if (!sourcePath) { _fovAdjClose(); return; }
+  id('fov-adj-status').textContent = 'Running auto-detection…';
+  id('fov-adj-status').style.color = 'var(--cyan)';
+  try {
+    const res = await fetch(`${SEG_SERVER}/analyze_fov`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: sourcePath}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    if (data.cropped) {
+      _fovCroppedPath = data.path;
+      _fovCropInfo    = data;
+      _pendingInputPath = data.path;
+      // Update inputs with detected values
+      if (id('fov-adj-axis'))  id('fov-adj-axis').value  = data.si_axis;
+      if (id('fov-adj-start')) id('fov-adj-start').value = data.crop_start;
+      if (id('fov-adj-end'))   id('fov-adj-end').value   = data.crop_end;
+      id('fov-adj-status').textContent = `Auto: ${data.removed_pct}% removed`;
+      _showFovBanner(data);
+    } else {
+      id('fov-adj-status').textContent = 'No large FOV detected — crop not needed.';
+      _fovCroppedPath = null; _fovCropInfo = null;
+      _pendingInputPath = sourcePath;
+      _hideFovBanner();
+    }
+  } catch(e) {
+    id('fov-adj-status').textContent = 'Error: ' + e.message;
+    id('fov-adj-status').style.color = 'var(--red)';
+  }
+}
+
 function _resegCancel() {
   id('reseg-modal').classList.remove('on');
   id('btn-seg').disabled = false;
@@ -3482,6 +3649,32 @@ async function runSegmentation() {
     return;
   }
 
+  // FOV analysis — detect and auto-crop neck/face FOV before TF starts
+  _fovOrigPath    = inputPath;
+  _fovCroppedPath = null;
+  _fovCropInfo    = null;
+  _hideFovBanner();
+  _segStatus('Analysing brain FOV…');
+  _segProg(4);
+  try {
+    const fovRes = await fetch(`${SEG_SERVER}/analyze_fov`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: inputPath }),
+    });
+    if (fovRes.ok) {
+      const fovData = await fovRes.json();
+      if (fovData.cropped) {
+        inputPath         = fovData.path;
+        _pendingInputPath = inputPath;
+        _fovCroppedPath   = inputPath;
+        _fovCropInfo      = fovData;
+        _showFovBanner(fovData);
+      }
+    }
+  } catch(e) { /* FOV analysis unavailable — proceed without pre-crop */ }
+  _segProg(5);
+
   // Check if previous segmentation exists
   try {
     const chk = await fetch(`${SEG_SERVER}/check_seg`, {
@@ -3509,6 +3702,10 @@ async function runSegmentation() {
 async function _startSegJob(inputPath) {
   _segStatus('Starting pipeline…');
 
+  // Use FOV-cropped file if one was prepared; tell the pipeline to skip re-cropping.
+  const effectivePath = _fovCroppedPath || inputPath;
+  const skipFovCrop   = !!_fovCroppedPath;
+
   // Read options from UI
   const optRobust     = id('opt-robust')?.checked      || false;
   const optFast       = id('opt-fast')?.checked        || false;
@@ -3523,12 +3720,13 @@ async function _startSegJob(inputPath) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        input_path: inputPath,
-        robust:     optRobust,
-        fast:       optFast,
-        ct:         optCt,
-        low_memory: optLowMemory,
-        threads:    optThreads,
+        input_path:    effectivePath,
+        robust:        optRobust,
+        fast:          optFast,
+        ct:            optCt,
+        low_memory:    optLowMemory,
+        threads:       optThreads,
+        skip_fov_crop: skipFovCrop,
       }),
     });
     if (!res.ok) {

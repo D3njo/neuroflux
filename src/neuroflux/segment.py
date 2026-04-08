@@ -196,85 +196,262 @@ def _check_models(robust: bool):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _crop_to_brain_fov(input_path: str, tmp_dir: str, margin_mm: float = 25.0) -> str:
+def _detect_fov_crop_params(
+    input_path: str,
+    margin_mm: float = 25.0,
+) -> dict | None:
     """
-    Pre-crop a scan to the FOV that contains only the skull/brain.
+    Detect whether the scan contains excess FOV (neck/face) and compute the
+    crop parameters that would isolate the skull/brain region.
 
-    Many clinical scans include neck, face and large empty FOV.  SynthSeg's
-    center crop then lands in the neck rather than the brain.
+    Strategy: compute cross-sectional area profile along each axis.  The
+    skull/brain produces a prominent peak while neck/vertex are much smaller.
+    We find the SI axis (highest peak-to-mean ratio) and expand from the peak
+    while area stays above 40 % of the maximum.
 
-    Strategy: compute the cross-sectional area profile along each axis.
-    The skull/brain produces a prominent peak (large area) while neck and
-    vertex have much smaller cross-sections.  We find that axis and crop
-    to the contiguous region around the peak that stays above 40 % of the
-    maximum — which reliably isolates the skull dome.
+    Returns a dict with crop parameters, or None if the scan needs < 10 %
+    removed (already well-centred — cropping not worthwhile).
 
-    Returns the path to the pre-cropped file, or the original path if the
-    scan is already well-centered (< 10 % removed) or detection fails.
+    Dict keys
+    ---------
+    si_axis    : int            detected superior-inferior axis (0/1/2)
+    start      : int            first kept slice along si_axis (after margin)
+    end        : int            last kept slice along si_axis  (after margin)
+    n_slices   : int            original size along si_axis
+    orig_shape : list[int]      full voxel dimensions of the scan
+    removed_pct: float          fraction of slices removed (0-100)
     """
-    img = nib.load(input_path)
-    data = img.get_fdata(dtype=np.float32)
-    affine = img.affine
+    import gc
+
+    img        = nib.load(input_path)
+    affine     = img.affine.copy()
+    orig_shape = list(img.shape[:3])
+    data       = img.get_fdata(dtype=np.float32)
+    del img
+    gc.collect()
+
     voxel_sizes = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))
-    margin_vox = np.ceil(margin_mm / voxel_sizes).astype(int)
+    margin_vox  = np.ceil(margin_mm / voxel_sizes).astype(int)
 
-    # Non-background mask (> 2nd percentile of non-zero voxels)
     nonzero = data[data > 0]
     if len(nonzero) < 1000:
-        return input_path
-    mask = data > np.percentile(nonzero, 2)
+        del data, nonzero, affine
+        gc.collect()
+        return None
+    thresh = float(np.percentile(nonzero, 2))
+    del nonzero
+    mask = data > thresh
+    del data
+    gc.collect()
 
-    # Cross-sectional area profile along each axis
+    # Cross-sectional area profiles along each axis
     profiles = []
     for ax in range(3):
         other = tuple(i for i in range(3) if i != ax)
         profiles.append(mask.sum(axis=other).astype(float))
 
-    # The skull/brain axis has the highest peak-to-mean ratio:
-    # brain dome >> neck cross-section
-    ratios = [p.max() / (p.mean() + 1e-6) for p in profiles]
+    ratios  = [p.max() / (p.mean() + 1e-6) for p in profiles]
     si_axis = int(np.argmax(ratios))
     profile = profiles[si_axis]
+    del profiles, ratios
 
-    # Expand from the peak outward while area stays > 40 % of maximum
-    threshold = profile.max() * 0.40
-    peak_idx = int(np.argmax(profile))
+    threshold = float(profile.max()) * 0.40
+    peak_idx  = int(np.argmax(profile))
+    del profile
+
+    n_slices = orig_shape[si_axis]
+    prof_si  = mask.sum(axis=tuple(i for i in range(3) if i != si_axis)).astype(float)
+    del mask
+    gc.collect()
 
     start = peak_idx
-    while start > 0 and profile[start - 1] > threshold:
+    while start > 0 and prof_si[start - 1] > threshold:
         start -= 1
     end = peak_idx
-    while end < len(profile) - 1 and profile[end + 1] > threshold:
+    while end < n_slices - 1 and prof_si[end + 1] > threshold:
         end += 1
+    del prof_si
 
     # Add margin
     start = max(0, start - int(margin_vox[si_axis]))
-    end   = min(data.shape[si_axis] - 1, end + int(margin_vox[si_axis]))
+    end   = min(n_slices - 1, end + int(margin_vox[si_axis]))
 
-    # Skip if less than 10 % removed — not worth rewriting the file
-    if (end - start + 1) >= 0.90 * data.shape[si_axis]:
-        del data, mask
-        return input_path
+    removed_pct = round((1.0 - (end - start + 1) / n_slices) * 100.0, 1)
 
-    slices = [slice(None)] * 3
+    if removed_pct < 10.0:
+        return None
+
+    return {
+        "si_axis":     si_axis,
+        "start":       start,
+        "end":         end,
+        "n_slices":    n_slices,
+        "orig_shape":  orig_shape,
+        "removed_pct": removed_pct,
+    }
+
+
+def _apply_fov_crop(
+    input_path: str,
+    out_path: str,
+    si_axis: int,
+    start: int,
+    end: int,
+) -> str:
+    """
+    Crop input_path along si_axis [start:end+1] and save to out_path.
+    Returns out_path.  Frees the large array immediately after saving.
+    """
+    import gc
+
+    img     = nib.load(input_path)
+    affine  = img.affine.copy()
+    header  = img.header.copy()
+    data    = img.get_fdata(dtype=np.float32)
+    del img
+    gc.collect()
+
+    slices       = [slice(None)] * 3
     slices[si_axis] = slice(start, end + 1)
-    cropped = data[tuple(slices)].copy()
+    cropped      = data[tuple(slices)].copy()
+    del data
+    gc.collect()
 
-    # Free full-resolution array before saving — critical on low-RAM systems
-    del data, mask
-    import gc; gc.collect()
-
-    # Shift affine origin to account for removed slices
     new_affine = affine.copy()
     offset = np.zeros(3)
     offset[si_axis] = float(start)
     new_affine[:3, 3] = affine[:3, :3] @ offset + affine[:3, 3]
 
-    out_path = os.path.join(tmp_dir, "brain_fov.nii.gz")
-    nib.save(nib.Nifti1Image(cropped, new_affine, img.header), out_path)
-    del cropped
+    nib.save(nib.Nifti1Image(cropped, new_affine, header), out_path)
+    del cropped, new_affine, affine, header
     gc.collect()
+
     return out_path
+
+
+def _crop_to_brain_fov(input_path: str, tmp_dir: str, margin_mm: float = 25.0) -> str:
+    """
+    Detect and apply brain FOV crop if needed.  Used by the CLI pipeline when
+    the server has not already pre-cropped the file.
+
+    Returns the path to the cropped file, or the original path if no crop
+    was needed.
+    """
+    params = _detect_fov_crop_params(input_path, margin_mm)
+    if params is None:
+        return input_path
+    out_path = os.path.join(tmp_dir, "brain_fov.nii.gz")
+    return _apply_fov_crop(
+        input_path, out_path,
+        params["si_axis"], params["start"], params["end"],
+    )
+
+
+def analyze_and_crop_fov(
+    input_path: str,
+    out_dir: str,
+    margin_mm: float = 25.0,
+) -> dict:
+    """
+    Public API — detect brain FOV, crop if needed, save to out_dir.
+
+    Call this BEFORE starting TensorFlow so the numpy arrays are freed and
+    the OS has time to reclaim pages before model weights are loaded.
+
+    Returns
+    -------
+    {
+      "cropped":     bool,       True when a crop was applied
+      "path":        str,        path to the (possibly cropped) file
+      "removed_pct": float,      % of slices removed (0 when cropped=False)
+      "si_axis":     int | None, detected SI axis (0/1/2)
+      "orig_shape":  list[int],  original voxel dimensions
+      "crop_start":  int | None, first kept slice
+      "crop_end":    int | None, last kept slice
+    }
+    """
+    params = _detect_fov_crop_params(input_path, margin_mm)
+    if params is None:
+        try:
+            img = nib.load(input_path)
+            shape = list(img.shape[:3])
+            del img
+        except Exception:
+            shape = []
+        return {
+            "cropped":     False,
+            "path":        input_path,
+            "removed_pct": 0.0,
+            "si_axis":     None,
+            "orig_shape":  shape,
+            "crop_start":  None,
+            "crop_end":    None,
+        }
+
+    os.makedirs(out_dir, exist_ok=True)
+    stem     = os.path.splitext(os.path.basename(input_path))[0]
+    stem     = stem.removesuffix(".nii")          # handle double extension
+    out_path = os.path.join(out_dir, f"{stem}_brain_fov.nii.gz")
+    _apply_fov_crop(
+        input_path, out_path,
+        params["si_axis"], params["start"], params["end"],
+    )
+    return {
+        "cropped":     True,
+        "path":        out_path,
+        "removed_pct": params["removed_pct"],
+        "si_axis":     params["si_axis"],
+        "orig_shape":  params["orig_shape"],
+        "crop_start":  params["start"],
+        "crop_end":    params["end"],
+    }
+
+
+def manual_crop_fov(
+    input_path: str,
+    out_path: str,
+    si_axis: int,
+    start_vox: int,
+    end_vox: int,
+) -> dict:
+    """
+    Public API — apply a user-specified FOV crop along si_axis.
+
+    Parameters
+    ----------
+    input_path : str   Source NIfTI file.
+    out_path   : str   Destination path for the cropped file.
+    si_axis    : int   Axis to crop along (0/1/2).
+    start_vox  : int   First voxel to keep (inclusive).
+    end_vox    : int   Last voxel to keep  (inclusive).
+
+    Returns the same structure as analyze_and_crop_fov.
+    """
+    img      = nib.load(input_path)
+    n_slices = img.shape[si_axis]
+    shape    = list(img.shape[:3])
+    del img
+
+    start_vox = max(0, int(start_vox))
+    end_vox   = min(n_slices - 1, int(end_vox))
+    if start_vox >= end_vox:
+        return {
+            "cropped": False, "path": input_path, "removed_pct": 0.0,
+            "si_axis": si_axis, "orig_shape": shape,
+            "crop_start": None, "crop_end": None,
+        }
+
+    _apply_fov_crop(input_path, out_path, si_axis, start_vox, end_vox)
+    removed_pct = round((1.0 - (end_vox - start_vox + 1) / n_slices) * 100.0, 1)
+    return {
+        "cropped":     True,
+        "path":        out_path,
+        "removed_pct": removed_pct,
+        "si_axis":     si_axis,
+        "orig_shape":  shape,
+        "crop_start":  start_vox,
+        "crop_end":    end_vox,
+    }
 
 
 def _has_real_swap() -> bool:
@@ -506,6 +683,7 @@ def run_pipeline(
     threads=1,
     use_ct=False,
     low_memory=False,
+    skip_fov_crop=False,
 ):
     """
     Run the full NEUROFLUX v2.0 segmentation pipeline.
@@ -585,10 +763,14 @@ def run_pipeline(
 
         # Pre-crop to brain FOV before SynthSeg so its center crop lands
         # on the brain even when the scan includes neck, face or large empty FOV.
-        _emit("setup", 6, "Localising brain FOV…")
-        seg_input = _crop_to_brain_fov(input_path, tmp)
-        if seg_input != input_path:
-            _emit("setup", 7, "Brain FOV detected — pre-cropped to skull region.")
+        # When skip_fov_crop=True the caller (server) already cropped the file.
+        if skip_fov_crop:
+            seg_input = input_path
+        else:
+            _emit("setup", 6, "Localising brain FOV…")
+            seg_input = _crop_to_brain_fov(input_path, tmp)
+            if seg_input != input_path:
+                _emit("setup", 7, "Brain FOV detected — pre-cropped to skull region.")
         # Ensure pre-crop arrays are released before TF allocates model memory
         import gc; gc.collect()
 
@@ -670,6 +852,9 @@ def _build_parser():
     p.add_argument("--low-memory", action="store_true",
                    help="Enable mixed float16 precision to halve GPU/RAM usage "
                         "(recommended on 8 GB systems)")
+    p.add_argument("--skip-fov-crop", action="store_true",
+                   help="Skip automatic brain FOV pre-crop (use when the file "
+                        "was already cropped by the server's /analyze_fov endpoint)")
     return p
 
 
@@ -685,6 +870,7 @@ def main():
             threads=args.threads,
             use_ct=args.ct,
             low_memory=args.low_memory,
+            skip_fov_crop=args.skip_fov_crop,
         )
         print(f"\nDone in {time.time()-t0:.0f}s")
         for k, v in result.items():

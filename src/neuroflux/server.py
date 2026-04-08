@@ -140,6 +140,7 @@ def _run_job(
     threads: int = 1,
     ct: bool = False,
     low_memory: bool = False,
+    skip_fov_crop: bool = False,
 ) -> None:
     """Run segment.py in a subprocess, feed stdout into the SSE queue."""
     q: queue.Queue = _jobs[job_id]["queue"]
@@ -156,6 +157,8 @@ def _run_job(
             cmd.append("--ct")
         if low_memory:
             cmd.append("--low-memory")
+        if skip_fov_crop:
+            cmd.append("--skip-fov-crop")
 
         # Store proc reference so the watchdog can kill it on timeout
         with _jobs_lock:
@@ -367,6 +370,81 @@ def _stem(input_path: str) -> str:
     return name
 
 
+@app.post("/analyze_fov")
+def analyze_fov():
+    """
+    Detect and apply brain FOV pre-crop on a previously-uploaded NIfTI.
+    Call this after /upload, BEFORE /segment, so all numpy arrays are freed
+    long before TensorFlow starts loading model weights.
+
+    Body: {"path": "/abs/path/to/file.nii.gz", "margin_mm": 25}
+    Returns: {
+      "cropped":     bool,
+      "path":        str,        path to cropped (or original) file
+      "removed_pct": float,
+      "si_axis":     int|null,   0=X 1=Y 2=Z
+      "orig_shape":  [X, Y, Z],
+      "crop_start":  int|null,
+      "crop_end":    int|null,
+    }
+    """
+    body   = request.get_json(force=True, silent=True) or {}
+    path   = body.get("path", "").strip()
+    margin = float(body.get("margin_mm", 25.0))
+
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": f"File not found: {path}"}), 400
+
+    from neuroflux.segment import analyze_and_crop_fov
+
+    fov_dir = os.path.join(tempfile.gettempdir(), "neuroflux_fov")
+    try:
+        result = analyze_and_crop_fov(path, fov_dir, margin_mm=margin)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(result)
+
+
+@app.post("/manual_crop")
+def manual_crop():
+    """
+    Apply a user-specified FOV crop along a given axis.
+
+    Body: {
+      "path":      "/abs/path/to/file.nii.gz",
+      "si_axis":   int,   0/1/2
+      "start_vox": int,   first voxel to keep (inclusive)
+      "end_vox":   int,   last voxel to keep  (inclusive)
+    }
+    Returns: same structure as /analyze_fov
+    """
+    body      = request.get_json(force=True, silent=True) or {}
+    path      = body.get("path", "").strip()
+    si_axis   = body.get("si_axis")
+    start_vox = body.get("start_vox")
+    end_vox   = body.get("end_vox")
+
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": f"File not found: {path}"}), 400
+    if si_axis is None or start_vox is None or end_vox is None:
+        return jsonify({"error": "si_axis, start_vox and end_vox are required"}), 400
+
+    from neuroflux.segment import manual_crop_fov
+
+    fov_dir  = os.path.join(tempfile.gettempdir(), "neuroflux_fov")
+    os.makedirs(fov_dir, exist_ok=True)
+    stem     = os.path.splitext(os.path.basename(path))[0].removesuffix(".nii")
+    out_path = os.path.join(fov_dir, f"{stem}_manual_crop.nii.gz")
+
+    try:
+        result = manual_crop_fov(path, out_path, int(si_axis), int(start_vox), int(end_vox))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(result)
+
+
 @app.post("/check_seg")
 def check_seg():
     """Check whether a previous segmentation exists for this file."""
@@ -408,11 +486,12 @@ def segment():
     output_dir = body.get("output_dir", "").strip() or None
 
     # SynthSeg 2.0 options
-    robust      = bool(body.get("robust",      False))
-    fast        = bool(body.get("fast",        False))
-    threads     = max(1, int(body.get("threads", 1)))
-    ct          = bool(body.get("ct",          False))
-    low_memory  = bool(body.get("low_memory",  False))
+    robust         = bool(body.get("robust",         False))
+    fast           = bool(body.get("fast",           False))
+    threads        = max(1, int(body.get("threads",  1)))
+    ct             = bool(body.get("ct",             False))
+    low_memory     = bool(body.get("low_memory",     False))
+    skip_fov_crop  = bool(body.get("skip_fov_crop",  False))
 
     if not input_path:
         return jsonify({"error": "input_path is required"}), 400
@@ -443,7 +522,10 @@ def segment():
     t = threading.Thread(
         target=_run_job,
         args=(job_id, input_path, output_dir),
-        kwargs={"robust": robust, "fast": fast, "threads": threads, "ct": ct, "low_memory": low_memory},
+        kwargs={
+            "robust": robust, "fast": fast, "threads": threads,
+            "ct": ct, "low_memory": low_memory, "skip_fov_crop": skip_fov_crop,
+        },
         daemon=True,
     )
     t.start()
