@@ -1,5 +1,5 @@
 """
-NEURO//FLUX — Segmentation Bridge Server  v1.7  (SynthSeg 2.0)
+NEURO//FLUX — Segmentation Bridge Server  v2.0  (SynthSeg 2.0)
 ===============================================================
 Starts a local Flask server on  http://localhost:5050
 
