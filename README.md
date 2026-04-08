@@ -103,7 +103,7 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 
 > **Apple Silicon (M1/M2/M3)?**  
 > Install the `[metal]` extra after the main install for GPU acceleration:  
-> `pip install "neuroflux[metal]"`
+> `uv pip install "neuroflux[metal]"`
 
 **Install uv (optional):**
 
@@ -133,10 +133,10 @@ source neuro_venv/bin/activate        # macOS / Linux
 neuro_venv\Scripts\activate           # Windows
 
 # Install NeuroFlux (includes SynthSeg + TensorFlow 2.15)
-pip install -e .
+uv pip install -e .
 
 # Apple Silicon: add Metal GPU plugin
-pip install "neuroflux[metal]"        # M1/M2/M3 only
+uv pip install "neuroflux[metal]"        # M1/M2/M3 only
 ```
 
 ---
