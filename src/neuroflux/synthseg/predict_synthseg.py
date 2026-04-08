@@ -74,7 +74,8 @@ def predict(path_images,
             list_correct_labels=None,
             compute_distances=False,
             recompute=True,
-            verbose=True):
+            verbose=True,
+            low_memory=False):
 
     # prepare input/output filepaths
     outputs = prepare_output_files(path_images, path_segmentations, path_posteriors, path_resampled,
@@ -131,7 +132,8 @@ def predict(path_images,
         write_csv(path_qc_scores[0], None, True, labels_qc, names_qc)
 
     # build (or retrieve cached) network
-    _cache_key = (path_model_segmentation, robust, do_parcellation, do_qc)
+    # Include low_memory in cache key to avoid mixing float32 and float16 models
+    _cache_key = (path_model_segmentation, robust, do_parcellation, do_qc, low_memory)
     if _cache_key in _MODEL_CACHE:
         net = _MODEL_CACHE[_cache_key]
     else:
@@ -147,7 +149,8 @@ def predict(path_images,
                           flip_indices=flip_indices,
                           robust=robust,
                           do_parcellation=do_parcellation,
-                          do_qc=do_qc)
+                          do_qc=do_qc,
+                          low_memory=low_memory)
         _MODEL_CACHE[_cache_key] = net
 
     # set cropping/padding
@@ -506,7 +509,8 @@ def build_model(path_model_segmentation,
                 flip_indices,
                 robust,
                 do_parcellation,
-                do_qc):
+                do_qc,
+                low_memory=False):
 
     assert os.path.isfile(path_model_segmentation), "The provided model path does not exist."
 

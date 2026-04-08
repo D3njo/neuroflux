@@ -690,6 +690,11 @@
               <span class="seg-opt-label">CT SCAN</span>
               <span class="seg-opt-hint">Hounsfield units</span>
             </label>
+            <label class="seg-opt-row">
+              <input type="checkbox" id="opt-low-memory">
+              <span class="seg-opt-label">LOW MEMORY</span>
+              <span class="seg-opt-hint">halve GPU/RAM usage</span>
+            </label>
             <div class="seg-opt-threads">
               <span class="seg-opt-label">THREADS</span>
               <input type="number" id="opt-threads" value="1" min="1" max="32">
@@ -3177,10 +3182,11 @@ async function runBatch() {
   if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⟳ RUNNING…'; }
 
   const opts = {
-    robust:  id('opt-robust')?.checked  || false,
-    fast:    id('opt-fast')?.checked    || false,
-    ct:      id('opt-ct')?.checked      || false,
-    threads: Math.max(1, parseInt(id('opt-threads')?.value) || 1),
+    robust:      id('opt-robust')?.checked      || false,
+    fast:        id('opt-fast')?.checked        || false,
+    ct:          id('opt-ct')?.checked          || false,
+    low_memory:  id('opt-low-memory')?.checked  || false,
+    threads:     Math.max(1, parseInt(id('opt-threads')?.value) || 1),
   };
 
   let done = 0, errs = 0;
@@ -3490,10 +3496,11 @@ async function _startSegJob(inputPath) {
   _segStatus('Starting pipeline…');
 
   // Read options from UI
-  const optRobust  = id('opt-robust')?.checked  || false;
-  const optFast    = id('opt-fast')?.checked    || false;
-  const optCt      = id('opt-ct')?.checked      || false;
-  const optThreads = Math.max(1, parseInt(id('opt-threads')?.value) || 1);
+  const optRobust     = id('opt-robust')?.checked      || false;
+  const optFast       = id('opt-fast')?.checked        || false;
+  const optCt         = id('opt-ct')?.checked          || false;
+  const optLowMemory  = id('opt-low-memory')?.checked  || false;
+  const optThreads    = Math.max(1, parseInt(id('opt-threads')?.value) || 1);
 
   // Start segmentation job
   let jobId;
@@ -3503,10 +3510,11 @@ async function _startSegJob(inputPath) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         input_path: inputPath,
-        robust:  optRobust,
-        fast:    optFast,
-        ct:      optCt,
-        threads: optThreads,
+        robust:     optRobust,
+        fast:       optFast,
+        ct:         optCt,
+        low_memory: optLowMemory,
+        threads:    optThreads,
       }),
     });
     if (!res.ok) {

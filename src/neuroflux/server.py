@@ -22,7 +22,8 @@ POST /segment
        "robust":      false,                  (optional, SynthSeg-robust model)
        "fast":        false,                  (optional, skip some post-proc)
        "threads":     1,                      (optional, CPU thread count)
-       "ct":          false                   (optional, CT scan mode)
+       "ct":          false,                  (optional, CT scan mode)
+       "low_memory":  false                   (optional, use float16 precision to halve GPU/RAM usage)
      }
      Starts the segmentation pipeline in a background thread.
      Returns: {"job_id": "<uuid>", "output_dir": "..."}
@@ -138,6 +139,7 @@ def _run_job(
     fast: bool = False,
     threads: int = 1,
     ct: bool = False,
+    low_memory: bool = False,
 ) -> None:
     """Run segment.py in a subprocess, feed stdout into the SSE queue."""
     q: queue.Queue = _jobs[job_id]["queue"]
@@ -152,10 +154,18 @@ def _run_job(
             cmd.append("--fast")
         if ct:
             cmd.append("--ct")
+        if low_memory:
+            cmd.append("--low-memory")
 
         # Store proc reference so the watchdog can kill it on timeout
         with _jobs_lock:
             _jobs[job_id]["proc"] = None
+
+        # Set TensorFlow environment variables to suppress noisy logs
+        # and avoid CUDA initialization conflicts between processes
+        env = os.environ.copy()
+        env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+        env.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
         proc = subprocess.Popen(
             cmd,
@@ -163,6 +173,7 @@ def _run_job(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
         )
 
         with _jobs_lock:
@@ -170,9 +181,15 @@ def _run_job(
 
         # Drain stderr in a background thread to avoid OS pipe-buffer deadlock
         # (SynthSeg can print long Python tracebacks to stderr)
+        # Filter out only the specific, harmless CUDA plugin registration warnings
         stderr_lines: list = []
         def _drain_stderr():
             for line in proc.stderr:
+                # Skip ONLY the exact benign CUDA warnings (cuDNN/cuFFT/cuBLAS plugin reinitialization)
+                # These are harmless but noisy from TensorFlow initialization
+                if ("Unable to register" in line and "factory" in line and
+                    any(x in line for x in ["cuDNN", "cuFFT", "cuBLAS", "cuSOLVER"])):
+                    continue
                 stderr_lines.append(line)
         drain_t = threading.Thread(target=_drain_stderr, daemon=True)
         drain_t.start()
@@ -385,10 +402,11 @@ def segment():
     output_dir = body.get("output_dir", "").strip() or None
 
     # SynthSeg 2.0 options
-    robust  = bool(body.get("robust",  False))
-    fast    = bool(body.get("fast",    False))
-    threads = max(1, int(body.get("threads", 1)))
-    ct      = bool(body.get("ct",      False))
+    robust      = bool(body.get("robust",      False))
+    fast        = bool(body.get("fast",        False))
+    threads     = max(1, int(body.get("threads", 1)))
+    ct          = bool(body.get("ct",          False))
+    low_memory  = bool(body.get("low_memory",  False))
 
     if not input_path:
         return jsonify({"error": "input_path is required"}), 400
@@ -419,7 +437,7 @@ def segment():
     t = threading.Thread(
         target=_run_job,
         args=(job_id, input_path, output_dir),
-        kwargs={"robust": robust, "fast": fast, "threads": threads, "ct": ct},
+        kwargs={"robust": robust, "fast": fast, "threads": threads, "ct": ct, "low_memory": low_memory},
         daemon=True,
     )
     t.start()

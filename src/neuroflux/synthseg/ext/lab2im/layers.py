@@ -745,21 +745,25 @@ class GaussianBlur(Layer):
         if self.separable:
             for k in self.kernels:
                 if k is not None:
+                    # Cast kernel to match image dtype (for float16 mixed precision compatibility)
+                    k = tf.cast(k, image.dtype)
                     image = tf.concat([self.convnd(tf.expand_dims(image[..., n], -1), k, self.stride, 'SAME')
                                        for n in range(self.n_channels)], -1)
                     if self.use_mask:
-                        maskb = tf.cast(mask, 'float32')
+                        maskb = tf.cast(mask, image.dtype)
                         maskb = tf.concat([self.convnd(tf.expand_dims(maskb[..., n], -1), k, self.stride, 'SAME')
                                            for n in range(self.n_channels)], -1)
                         image = image / (maskb + K.epsilon())
                         image = tf.where(mask, image, tf.zeros_like(image))
         else:
             if any(self.sigma):
-                image = tf.concat([self.convnd(tf.expand_dims(image[..., n], -1), self.kernels, self.stride, 'SAME')
+                # Cast kernels to match image dtype (for float16 mixed precision compatibility)
+                kernels = tf.cast(self.kernels, image.dtype)
+                image = tf.concat([self.convnd(tf.expand_dims(image[..., n], -1), kernels, self.stride, 'SAME')
                                    for n in range(self.n_channels)], -1)
                 if self.use_mask:
-                    maskb = tf.cast(mask, 'float32')
-                    maskb = tf.concat([self.convnd(tf.expand_dims(maskb[..., n], -1), self.kernels, self.stride, 'SAME')
+                    maskb = tf.cast(mask, image.dtype)
+                    maskb = tf.concat([self.convnd(tf.expand_dims(maskb[..., n], -1), kernels, self.stride, 'SAME')
                                        for n in range(self.n_channels)], -1)
                     image = image / (maskb + K.epsilon())
                     image = tf.where(mask, image, tf.zeros_like(image))
@@ -811,11 +815,13 @@ class DynamicGaussianBlur(Layer):
         image = inputs[0]
         sigma = inputs[-1]
         kernels = l2i_et.gaussian_kernel(sigma, self.max_sigma, self.blur_range, self.separable)
+        # Define output signature for fn_output_signature (replaces deprecated dtype parameter)
+        output_sig = tf.TensorSpec(shape=image.shape[1:], dtype=image.dtype)
         if self.separable:
             for kernel in kernels:
-                image = tf.map_fn(self._single_blur, [image, kernel], dtype=tf.float32)
+                image = tf.map_fn(self._single_blur, [image, kernel], fn_output_signature=output_sig)
         else:
-            image = tf.map_fn(self._single_blur, [image, kernels], dtype=tf.float32)
+            image = tf.map_fn(self._single_blur, [image, kernels], fn_output_signature=output_sig)
         return image
 
     def _single_blur(self, inputs):

@@ -29,6 +29,7 @@ JSON protocol (stdout)
 """
 
 import argparse
+import io
 import json
 import os
 import pathlib
@@ -104,6 +105,8 @@ def _error(msg):
 
 # ── TF configuration (must run before any TF import) ─────────────────────────
 
+_TF_CONFIGURED = False
+
 def _configure_tf(threads: int, low_memory: bool = False):
     """
     Configure TensorFlow before it initialises.
@@ -113,11 +116,26 @@ def _configure_tf(threads: int, low_memory: bool = False):
        ChromeOS Flex with 8 GB).
     - Wire the --threads argument to TF's inter/intra-op thread counts.
     - low_memory: enable mixed float16 precision to halve model RAM usage.
+
+    This function is idempotent — calling it multiple times is safe.
     """
+    global _TF_CONFIGURED
+    if _TF_CONFIGURED:
+        return
+
+    print(f"[neuroflux] Configuring TensorFlow (threads={threads}, low_memory={low_memory})", flush=True)
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+    os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
 
-    import tensorflow as tf
+    # Suppress CUDA plugin registration warnings (cuDNN, cuFFT, cuBLAS)
+    # These are harmless but noisy; redirect stderr temporarily
+    old_stderr = sys.stderr
+    sys.stderr = io.StringIO()
+    try:
+        import tensorflow as tf
+    finally:
+        sys.stderr = old_stderr
 
     tf.config.threading.set_inter_op_parallelism_threads(threads)
     tf.config.threading.set_intra_op_parallelism_threads(threads)
@@ -129,7 +147,26 @@ def _configure_tf(threads: int, low_memory: bool = False):
             pass  # device already initialised
 
     if low_memory:
-        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+        print(f"[neuroflux] low_memory mode enabled", flush=True)
+        # Only use mixed_float16 on NVIDIA/AMD GPUs; skip on CPU, Intel, or Metal
+        # (Intel integrated GPUs and Metal don't have good float16 support)
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            gpu_name = gpus[0].name.lower()
+            has_nvidia_or_amd = any(x in gpu_name for x in ['nvidia', 'amd', 'cuda', 'rocm'])
+            if has_nvidia_or_amd:
+                try:
+                    print(f"[neuroflux] Setting mixed_float16 for NVIDIA/AMD GPU", flush=True)
+                    policy = tf.keras.mixed_precision.Policy('mixed_float16')
+                    tf.keras.mixed_precision.set_global_policy(policy)
+                    print(f"[neuroflux] Mixed precision policy set: {policy.name}", flush=True)
+                except Exception as e:
+                    print(f"[neuroflux] Warning: mixed_float16 failed: {e}", flush=True)
+            else:
+                print(f"[neuroflux] Skipping mixed_float16 on {gpu_name} (not optimal)", flush=True)
+                print(f"[neuroflux] Using memory-growth strategy instead", flush=True)
+        else:
+            print(f"[neuroflux] No GPU detected, skipping mixed_float16", flush=True)
 
     # ── Apple Silicon hint ────────────────────────────────────────────────────
     if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -141,6 +178,8 @@ def _configure_tf(threads: int, low_memory: bool = False):
                 '            pip install "neuroflux[metal]"',
                 file=sys.stderr,
             )
+
+    _TF_CONFIGURED = True
 
 
 # ── Model weight check + version check ───────────────────────────────────────
@@ -187,14 +226,12 @@ def _run_synthseg(
     Call SynthSeg's predict() directly in-process.
     Replaces the old subprocess approach (no separate venv needed).
     """
-    # TF must be configured before the first TF import
-    _configure_tf(threads, low_memory=low_memory)
-
-    # Lazy import — keeps TF out of module-load time
+    # Lazy import — TF is already configured by run_pipeline()
     from neuroflux.synthseg.predict_synthseg import predict as _ss_predict
 
     mode = "robust" if robust else "standard"
-    _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {threads} thread(s))…")
+    low_mem_note = " (low_memory mode)" if low_memory else ""
+    _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {threads} thread(s)){low_mem_note}…")
 
     _ss_predict(
         path_images               = input_path,
@@ -224,6 +261,7 @@ def _run_synthseg(
         names_qc                  = str(_DATA_DIR / "synthseg_qc_names_2.0.npy"),
         topology_classes          = str(_DATA_DIR / "synthseg_topological_classes_2.0.npy"),
         verbose                   = False,
+        low_memory                = low_memory,
     )
 
     _emit("synthseg", 85, "SynthSeg inference complete.")
@@ -348,6 +386,10 @@ def run_pipeline(
     -------
     dict  keys: original, seg_full, seg_hemi, summary, seg_fs
     """
+    # Configure TensorFlow before any lazy imports.
+    # This must happen first to avoid double-initialization when predict_synthseg imports TF.
+    _configure_tf(threads, low_memory=low_memory)
+
     t0 = time.time()
 
     input_path = os.path.abspath(input_path)
