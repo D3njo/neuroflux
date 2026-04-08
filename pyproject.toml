@@ -65,6 +65,7 @@ exclude = [
     "src/neuroflux/synthseg/predict_synthseg.py",
     "src/neuroflux/synthseg/predict_qc.py",
     "src/neuroflux/synthseg/predict_denoiser.py",
+    "src/neuroflux/synthseg/predict_group.py",
     "src/neuroflux/synthseg/evaluate.py",
     "src/neuroflux/synthseg/metrics_model.py",
     "src/neuroflux/synthseg/labels_to_image_model.py",
@@ -74,7 +75,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]   # pycodestyle errors/warnings + pyflakes + isort
-ignore = ["E501"]                # line-length handled by formatter, not linter
+ignore = ["E501", "E701"]        # E501: line-length; E701: single-line if (used for alignment)
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -48,12 +48,25 @@ Usage
 """
 
 from __future__ import annotations
-import argparse, json, os, platform, queue, subprocess, sys, threading, uuid, time, io, tempfile, base64
-from flask import Flask, Response, jsonify, request, send_file, abort
-from flask_cors import CORS
 
-import numpy as np
+import argparse
+import base64
+import io
+import json
+import os
+import platform
+import queue
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
+
 import nibabel as nib
+import numpy as np
+from flask import Flask, Response, abort, jsonify, request, send_file
+from flask_cors import CORS
 
 app   = Flask(__name__)
 CORS(app)
@@ -517,8 +530,8 @@ def get_mask():
             else:
                 all_lbls = {label}
             combined = np.zeros_like(arr, dtype=np.uint8)
-            for l in all_lbls:
-                combined[arr == l] = 1
+            for lbl in all_lbls:
+                combined[arr == lbl] = 1
             labeled, _ = nd_label(combined)
             # Zero out excluded components in this tissue's mask
             for comp_id in excluded_ids:
@@ -646,8 +659,7 @@ def refine():
                 new_labels[changed_mask]
 
     # ── Post-processing: fill holes created by boundary correction ────────
-    from scipy.ndimage import (binary_fill_holes, binary_closing,
-                                distance_transform_edt, label as nd_label)
+    from scipy.ndimage import binary_closing, binary_fill_holes, distance_transform_edt
 
     affected_labels = list(set(int(lbl) for pair in pairs for lbl in pair))
 
@@ -705,9 +717,10 @@ def _build_mesh_response(seg_arr, affine, labels,
     Shared mesh-building logic for /preview3d.
     Now includes per-tissue vertex coloring for the 3D preview.
     """
-    from scipy.ndimage import gaussian_filter, label as nd_label
-    from skimage.measure import marching_cubes
     import trimesh
+    from scipy.ndimage import gaussian_filter
+    from scipy.ndimage import label as nd_label
+    from skimage.measure import marching_cubes
 
     excluded_comps = excluded_comps or set()
 
@@ -1020,10 +1033,10 @@ def export3d():
     # ── STL export — per-tissue + combined ──────────────────────────────────
     elif fmt == "stl":
         try:
-            from skimage.measure import marching_cubes
-            from scipy.ndimage import (gaussian_filter, label as nd_label,
-                                       binary_erosion, generate_binary_structure)
             import trimesh
+            from scipy.ndimage import gaussian_filter
+            from scipy.ndimage import label as nd_label
+            from skimage.measure import marching_cubes
             from trimesh import smoothing as tri_smooth
         except ImportError as e:
             return jsonify({"error": f"Missing dependency: {e}"}), 500
@@ -1031,9 +1044,6 @@ def export3d():
         stl_sigma          = float(body.get("stl_sigma",          0.5))
         stl_taubin         = int(body.get("stl_taubin",           10))
         stl_max_faces      = int(body.get("stl_max_faces",        300_000))
-        stl_sulci_preserve = bool(body.get("stl_sulci_preserve",  True))
-        stl_sulci_strength = float(body.get("stl_sulci_strength", 0.55))
-        hc_iterations      = int(body.get("stl_hc_iterations",    12))
         stl_hollow         = bool(body.get("stl_hollow",          False))
         stl_wall_mm        = float(body.get("stl_wall_mm",        5.0))
         combined_only        = bool(body.get("combined_only",         True))
@@ -1066,8 +1076,7 @@ def export3d():
             Gaussian blur → Marching Cubes → Taubin smooth → decimate
             NO morphological operations (they destroy thin structures like WM).
             """
-            from scipy.ndimage import (binary_fill_holes, binary_erosion,
-                                        generate_binary_structure)
+            from scipy.ndimage import binary_erosion, generate_binary_structure
 
             tissue_name = tissue_params.get("name", "unknown")
             voxel_count = int(binary_mask.sum())
@@ -1166,7 +1175,6 @@ def export3d():
             # ── 6. Decimation ────────────────────────────────────────────
             if len(mesh.faces) > stl_max_faces:
                 try:
-                    import fast_simplification
                     mesh = mesh.simplify_quadric_decimation(
                         face_count=stl_max_faces)
                 except Exception:
@@ -1681,13 +1689,13 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
     args = parser.parse_args()
 
-    print(f"\n  NEURO//FLUX Segmentation Server")
-    print(f"  ================================")
+    print("\n  NEURO//FLUX Segmentation Server")
+    print("  ================================")
     print(f"  Running on  http://{args.host}:{args.port}")
-    print(f"")
+    print("")
     print(f"  → Open  http://localhost:{args.port}  in your browser")
-    print(f"")
-    print(f"  Press Ctrl+C to stop.\n")
+    print("")
+    print("  Press Ctrl+C to stop.\n")
 
     app.run(host=args.host, port=args.port, threaded=True, debug=False)
 
