@@ -482,6 +482,18 @@ def run_pipeline(
         f"shape={shape}  voxel={spacing} mm"
     ))
 
+    # Warn early if low_memory crop will clip this scan
+    if low_memory and not _has_real_swap():
+        vox = spacing  # mm per voxel
+        size_mm = tuple(round(shape[i] * vox[i], 1) for i in range(3))
+        clipped = [s for s in size_mm if s > 160]
+        if clipped:
+            _emit("setup", 5, (
+                f"Warning: scan is {size_mm[0]}×{size_mm[1]}×{size_mm[2]} mm — "
+                f"low_memory crops to 160 mm, edges may be clipped. "
+                f"Add real swap to process the full scan."
+            ))
+
     # ── 2. SynthSeg inference ─────────────────────────────────────────────────
     with tempfile.TemporaryDirectory(prefix="neuroflux_ss_") as tmp:
         fs_seg_path     = os.path.join(tmp, "synthseg_fs.nii.gz")
