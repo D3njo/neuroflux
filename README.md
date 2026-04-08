@@ -31,7 +31,9 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 | **Hemisphere** | 10 | Full lateral split — GM-L/R · WM-L/R · deep GM-L/R · CC · BS · CB |
 | **Structures** | 37 | Individual FreeSurfer structures (raw `seg_fs_labels.nii.gz`) |
 
-**Options:** `--robust` (clinical / low-SNR scans) · `--fast` (~2× speed) · `--ct` (CT Hounsfield mode) · `--threads N`
+**Options:** `--robust` (clinical / low-SNR scans) · `--fast` (~2× speed) · `--ct` (CT Hounsfield mode) · `--threads N` · `--low-memory` (8 GB systems)
+
+**Automatic brain FOV detection** — before inference, NeuroFlux analyses the cross-sectional area profile of the scan along each axis. The skull/brain produces a distinct peak (large area) while neck and vertex have much smaller cross-sections. The pipeline crops to the contiguous region around that peak, ensuring SynthSeg's center crop lands on the brain even for whole-head scans that include neck, face, or large empty FOV. Scans that are already well-centred are passed through unchanged.
 
 ### Viewer
 - **4-panel MRI viewer** — axial / sagittal / coronal / 3-D render via [NiiVue v0.47](https://github.com/niivue/niivue)
