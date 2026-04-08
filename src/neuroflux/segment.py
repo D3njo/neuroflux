@@ -223,13 +223,15 @@ def _run_synthseg(
         fast = True
         # crop to 128³: reduces input tensor to ~128³ (~80% smaller volume vs uncropped 256³)
         cropping = 128
-        # skip QC model entirely to avoid loading its weights into RAM
-        do_qc_path = None
+        # skip QC model and posteriors to avoid materializing 95-class posterior tensor (~800 MB)
+        do_qc_path      = None
+        do_posteriors   = None
         _emit("synthseg", 8,
-              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop128+no-QC, {threads} thread(s))…")
+              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop128+no-QC+no-posteriors, {threads} thread(s))…")
     else:
-        cropping = None
-        do_qc_path = qc_path
+        cropping      = None
+        do_qc_path    = qc_path
+        do_posteriors = posteriors_path
         _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {threads} thread(s))…")
 
     _ss_predict(
@@ -244,7 +246,7 @@ def _run_synthseg(
         v1                        = False,
         n_neutral_labels          = 19,
         labels_denoiser           = str(_DATA_DIR / "synthseg_denoiser_labels_2.0.npy"),
-        path_posteriors           = posteriors_path,
+        path_posteriors           = do_posteriors,
         path_resampled            = resampled_path,
         path_volumes              = volumes_path,
         do_parcellation           = False,
