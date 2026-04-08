@@ -41,7 +41,7 @@ import tempfile
 import numpy as np
 import nibabel as nib
 
-from labels import fs_to_tissue, fs_to_hemi, TISSUE_NAMES, HEMI_NAMES
+from neuroflux.labels import fs_to_tissue, fs_to_hemi, TISSUE_NAMES, HEMI_NAMES
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 

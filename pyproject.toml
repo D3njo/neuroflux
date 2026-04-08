@@ -30,8 +30,9 @@ dependencies = [
     "trimesh>=4.0",
     "pydicom>=2.4",
     "dicom2nifti>=2.4",
-    # SynthSeg 2.0 is now bundled — these were previously in the separate synthseg_env
-    "tensorflow==2.15.*",
+    # SynthSeg 2.0 is now bundled — TF 2.15 supports Python 3.9-3.11
+    # Python 3.12+ will need TF 2.16+ once Keras 3 migration is done
+    "tensorflow==2.15.*; python_version < '3.12'",
     "h5py>=3.8",
     "matplotlib>=3.7",
     "protobuf>=4.21,<5",
@@ -57,3 +58,6 @@ metal = ["tensorflow-metal>=1.1"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "slow: tests that require TensorFlow and take significant time (deselect with -m 'not slow')",
+]
