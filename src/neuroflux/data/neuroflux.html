@@ -821,15 +821,19 @@
 
           <!-- Brain volumes panel (shown after segmentation) -->
           <div id="vol-panel" style="display:none;">
-            <div id="vol-panel-header">
-              <div class="seg-ol-header" style="margin:0;">BRAIN VOLUMES</div>
-              <div style="display:flex;gap:4px;align-items:center;">
+            <div id="vol-panel-header" onclick="togVolPanel()" style="cursor:pointer;" title="Show/hide brain volumes">
+              <div class="seg-ol-header" style="margin:0;">
+                <span id="vol-panel-arrow" style="display:inline-block;margin-right:4px;transition:transform .15s;">▸</span>BRAIN VOLUMES
+              </div>
+              <div style="display:flex;gap:4px;align-items:center;" onclick="event.stopPropagation()">
                 <button id="vol-ref-btn" onclick="togNormRef()" title="Toggle normative reference Z-scores" style="background:none;border:none;color:var(--textdim);font-family:var(--font-mono);font-size:9px;cursor:pointer;padding:0;letter-spacing:1px;opacity:0.6;transition:opacity .15s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.6">REF</button>
                 <button id="vol-csv-btn" onclick="exportVolumesCSV()" title="Download CSV">⬇ CSV</button>
               </div>
             </div>
-            <div id="qc-row"></div>
-            <div id="vol-table"></div>
+            <div id="vol-body" style="display:none;">
+              <div id="qc-row"></div>
+              <div id="vol-table"></div>
+            </div>
           </div>
 
           <!-- Refine boundaries -->
@@ -2332,7 +2336,17 @@ function _renderVolumePanel(data) {
   if (!entries.length) return;
   const maxVol = entries[0][1];
   _renderVolRows(tbl, entries, maxVol);
+  // Show panel header but keep body collapsed — user clicks to expand
   panel.style.display = '';
+}
+
+function togVolPanel() {
+  const body  = id('vol-body');
+  const arrow = id('vol-panel-arrow');
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display  = open ? 'none' : '';
+  if (arrow) arrow.style.transform = open ? '' : 'rotate(90deg)';
 }
 
 // ── Normative reference data (adult 25–65 y, approximate mean ± SD in mm³) ──
@@ -3605,7 +3619,6 @@ async function _fetchAndActivateOverlays() {
   const structBtn = id('btn-mode-struct');
   if (hemiBtn)   hemiBtn.disabled   = !segPaths.seg_hemi;
   if (structBtn) structBtn.disabled = !segPaths.seg_fs;
-  _updateExportBtn();
   _loadSummary();
 
   if (_segMode === 'struct') {
@@ -3620,6 +3633,8 @@ async function _fetchAndActivateOverlays() {
     const cb = id('ol-' + key);
     if (cb) cb.checked = true;
   });
+  // Update export button AFTER checkboxes are set — _updateExportBtn checks cb.checked
+  _updateExportBtn();
 
   // Load all overlays via server-side mask extraction
   const keysToLoad = Object.keys(overlays).filter(k => id('ol-' + k)?.checked);
