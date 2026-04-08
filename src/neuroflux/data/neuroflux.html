@@ -3571,7 +3571,9 @@ async function _startSegJob(inputPath) {
       _segJobStart  = null;
       id('btn-cancel-seg').style.display = 'none';
       id('seg-eta').textContent = '';
-      _segStatus('Error: ' + (msg.msg || 'unknown'), true);
+      const errText = msg.msg || 'unknown';
+      console.error('[neuroflux] Segmentation error:', errText);
+      _segStatus('Error: ' + errText, true);
       id('btn-seg').disabled = false;
       status('Segmentation failed');
     }
@@ -3583,6 +3585,7 @@ async function _startSegJob(inputPath) {
     _segJobStart  = null;
     id('btn-cancel-seg').style.display = 'none';
     id('seg-eta').textContent = '';
+    console.error('[neuroflux] SSE connection lost (server crashed or unreachable)');
     _segStatus('Server connection lost.', true);
     id('btn-seg').disabled = false;
   };

@@ -191,6 +191,8 @@ def _run_job(
                     any(x in line for x in ["cuDNN", "cuFFT", "cuBLAS", "cuSOLVER"])):
                     continue
                 stderr_lines.append(line)
+                # Mirror to terminal in real time so errors are visible immediately
+                print(line, end="", file=sys.stderr, flush=True)
         drain_t = threading.Thread(target=_drain_stderr, daemon=True)
         drain_t.start()
 
@@ -218,16 +220,20 @@ def _run_job(
         # If process exited with an error but never emitted a JSON error message
         if proc.returncode != 0:
             stderr_out = "".join(stderr_lines)
-            err_msg = json.dumps({
-                "status": "error",
-                "msg": f"Process exited {proc.returncode}. Stderr: {stderr_out}",
-            })
+            msg_text = f"Process exited {proc.returncode}. Stderr: {stderr_out}"
+            # Always print to terminal so it's visible regardless of UI state
+            print(f"\n[neuroflux] JOB ERROR ({job_id}):\n{msg_text}\n",
+                  file=sys.stderr, flush=True)
+            err_msg = json.dumps({"status": "error", "msg": msg_text})
             q.put(err_msg)
             with _jobs_lock:
                 _jobs[job_id]["status"] = "error"
 
     except Exception as exc:
-        err_msg = json.dumps({"status": "error", "msg": str(exc)})
+        msg_text = str(exc)
+        print(f"\n[neuroflux] JOB EXCEPTION ({job_id}):\n{msg_text}\n",
+              file=sys.stderr, flush=True)
+        err_msg = json.dumps({"status": "error", "msg": msg_text})
         q.put(err_msg)
         with _jobs_lock:
             _jobs[job_id]["status"] = "error"
