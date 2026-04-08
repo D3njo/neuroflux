@@ -325,7 +325,47 @@ src/neuroflux/
 
 - **Python 3.12+:** TF 2.15 has no wheels for Python 3.12 or newer. Use Python 3.10 or 3.11. Support for 3.12+ will come once the Keras 3 migration is complete.
 - **Apple Silicon:** install `pip install "neuroflux[metal]"` for GPU acceleration. Without it, inference runs on CPU (~1 min/scan).
-- **Low RAM (≤ 8 GB):** TF memory growth is enabled by default — TF will not pre-allocate all available memory. Use `--threads 1` (default) and avoid running other heavy applications during inference.
+- **Low RAM (≤ 8 GB):** Use the **Low Memory** option in the UI (or `--low-memory` on the CLI). This forces fast mode, reduces the input crop to 128³, and skips the QC model — cutting peak RAM from ~4.5 GB to ~2–3 GB. If the process is still killed by the OS (exit code -9), your system has no swap space. Set up a swapfile:
+
+  <details>
+  <summary>▸ Linux / WSL2</summary>
+
+  ```bash
+  sudo fallocate -l 4G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+
+  # Persist across reboots:
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  ```
+
+  </details>
+
+  <details>
+  <summary>▸ ChromeOS / Crostini (Linux container)</summary>
+
+  Swap cannot be created inside the container. Enable zram-based swap from the ChromeOS shell instead:
+
+  1. Open **crosh**: `Ctrl`+`Alt`+`T` in the Chrome browser
+  2. Run: `swap enable 4096`
+  3. Reboot ChromeOS
+
+  </details>
+
+  <details>
+  <summary>▸ macOS</summary>
+
+  macOS manages swap automatically (dynamic paging). If you hit OOM, free up RAM by closing other applications — you cannot manually add a swapfile on macOS.
+
+  </details>
+
+  <details>
+  <summary>▸ Windows</summary>
+
+  Go to **System → Advanced system settings → Performance → Settings → Advanced → Virtual memory**, click *Change*, uncheck *Automatically manage*, set a custom size (e.g. 4096–8192 MB), and reboot.
+
+  </details>
 - **Windows GPU:** TF 2.15 supports CUDA on Windows. For CPU-only use, no extra setup is needed.
 - **`neuroflux.html` must be served via the Flask server**, not opened as `file://`. The server enforces CORS and handles all `/file`, `/segment`, and SSE endpoints.
 
