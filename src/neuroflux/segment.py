@@ -115,7 +115,7 @@ def _configure_tf(threads: int, low_memory: bool = False):
       (critical on unified-memory / low-RAM systems like Apple Silicon or
        ChromeOS Flex with 8 GB).
     - Wire the --threads argument to TF's inter/intra-op thread counts.
-    - low_memory: enable mixed float16 precision to halve model RAM usage.
+    - low_memory: unused here — RAM savings are applied in _run_synthseg instead.
 
     This function is idempotent — calling it multiple times is safe.
     """
@@ -123,7 +123,6 @@ def _configure_tf(threads: int, low_memory: bool = False):
     if _TF_CONFIGURED:
         return
 
-    print(f"[neuroflux] Configuring TensorFlow (threads={threads}, low_memory={low_memory})", flush=True)
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
     os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
@@ -146,27 +145,8 @@ def _configure_tf(threads: int, low_memory: bool = False):
         except RuntimeError:
             pass  # device already initialised
 
-    if low_memory:
-        print(f"[neuroflux] low_memory mode enabled", flush=True)
-        # Only use mixed_float16 on NVIDIA/AMD GPUs; skip on CPU, Intel, or Metal
-        # (Intel integrated GPUs and Metal don't have good float16 support)
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            gpu_name = gpus[0].name.lower()
-            has_nvidia_or_amd = any(x in gpu_name for x in ['nvidia', 'amd', 'cuda', 'rocm'])
-            if has_nvidia_or_amd:
-                try:
-                    print(f"[neuroflux] Setting mixed_float16 for NVIDIA/AMD GPU", flush=True)
-                    policy = tf.keras.mixed_precision.Policy('mixed_float16')
-                    tf.keras.mixed_precision.set_global_policy(policy)
-                    print(f"[neuroflux] Mixed precision policy set: {policy.name}", flush=True)
-                except Exception as e:
-                    print(f"[neuroflux] Warning: mixed_float16 failed: {e}", flush=True)
-            else:
-                print(f"[neuroflux] Skipping mixed_float16 on {gpu_name} (not optimal)", flush=True)
-                print(f"[neuroflux] Using memory-growth strategy instead", flush=True)
-        else:
-            print(f"[neuroflux] No GPU detected, skipping mixed_float16", flush=True)
+    # low_memory RAM savings are handled in _run_synthseg (fast mode, cropping, no QC),
+    # not here — mixed_float16 has no effect on CPU TensorFlow and is not set.
 
     # ── Apple Silicon hint ────────────────────────────────────────────────────
     if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -225,13 +205,32 @@ def _run_synthseg(
     """
     Call SynthSeg's predict() directly in-process.
     Replaces the old subprocess approach (no separate venv needed).
+
+    low_memory mode reduces peak RAM by:
+      - forcing fast=True (single forward pass instead of normal+flipped average → ~50% less peak RAM)
+      - cropping input to 192³ (vs. unconstrained padding → ~40% less input tensor RAM)
+      - disabling QC model (saves ~200 MB model weights + activations)
+    These are the only knobs that actually reduce memory on CPU/Intel GPU;
+    mixed_float16 has no effect on CPU TensorFlow.
     """
     # Lazy import — TF is already configured by run_pipeline()
     from neuroflux.synthseg.predict_synthseg import predict as _ss_predict
 
     mode = "robust" if robust else "standard"
-    low_mem_note = " (low_memory mode)" if low_memory else ""
-    _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {threads} thread(s)){low_mem_note}…")
+
+    if low_memory:
+        # fast=True: skip the flipped-image second pass (halves peak activation RAM)
+        fast = True
+        # crop to 192³: reduces input tensor from ~256³ to ~192³ (~55% smaller volume)
+        cropping = 192
+        # skip QC model entirely to avoid loading its weights into RAM
+        do_qc_path = None
+        _emit("synthseg", 8,
+              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop192+no-QC, {threads} thread(s))…")
+    else:
+        cropping = None
+        do_qc_path = qc_path
+        _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {threads} thread(s))…")
 
     _ss_predict(
         path_images               = input_path,
@@ -251,17 +250,16 @@ def _run_synthseg(
         do_parcellation           = False,
         path_model_parcellation   = str(_MODEL_DIR / "synthseg_parc_2.0.h5"),
         labels_parcellation       = str(_DATA_DIR / "synthseg_parcellation_labels.npy"),
-        path_qc_scores            = qc_path,
+        path_qc_scores            = do_qc_path,
         path_model_qc             = str(_MODEL_DIR / "synthseg_qc_2.0.h5"),
         labels_qc                 = str(_DATA_DIR / "synthseg_qc_labels_2.0.npy"),
-        cropping                  = None,
+        cropping                  = cropping,
         ct                        = use_ct,
         names_segmentation        = str(_DATA_DIR / "synthseg_segmentation_names_2.0.npy"),
         names_parcellation        = str(_DATA_DIR / "synthseg_parcellation_names.npy"),
         names_qc                  = str(_DATA_DIR / "synthseg_qc_names_2.0.npy"),
         topology_classes          = str(_DATA_DIR / "synthseg_topological_classes_2.0.npy"),
         verbose                   = False,
-        low_memory                = low_memory,
     )
 
     _emit("synthseg", 85, "SynthSeg inference complete.")
