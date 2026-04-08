@@ -454,6 +454,82 @@ def manual_crop_fov(
     }
 
 
+def manual_crop_fov_multi(
+    input_path: str,
+    out_path: str,
+    crops: list,
+) -> dict:
+    """
+    Apply multiple axis crops in sequence.
+
+    crops: list of {"si_axis": int, "start_vox": int, "end_vox": int}
+    Only axes where the user actually trimmed something are applied.
+    Returns the same structure as manual_crop_fov.
+    """
+    import gc
+    import shutil
+
+    orig_img   = nib.load(input_path)
+    orig_shape = list(orig_img.shape[:3])
+    del orig_img
+    gc.collect()
+
+    current    = input_path
+    applied    = []          # crops actually applied
+    prev_tmp   = None        # track intermediate tmp files
+
+    for crop in crops:
+        ax    = int(crop["si_axis"])
+        start = int(crop["start_vox"])
+        end   = int(crop["end_vox"])
+
+        img = nib.load(current)
+        n   = img.shape[ax]
+        del img
+        gc.collect()
+
+        start = max(0, start)
+        end   = min(n - 1, end)
+        if start <= 0 and end >= n - 1:
+            continue  # full range → skip
+        if start >= end:
+            continue
+
+        tmp = out_path + f".tmp_ax{ax}.nii.gz"
+        _apply_fov_crop(current, tmp, ax, start, end)
+
+        if prev_tmp and os.path.exists(prev_tmp):
+            os.remove(prev_tmp)
+        prev_tmp = tmp
+        current  = tmp
+        applied.append({"si_axis": ax, "start_vox": start, "end_vox": end, "n": n})
+
+    if not applied:
+        return {
+            "cropped": False, "path": input_path, "removed_pct": 0.0,
+            "si_axis": None, "orig_shape": orig_shape,
+            "crop_start": None, "crop_end": None,
+        }
+
+    shutil.move(current, out_path)
+
+    # Use the primary (first applied) crop for the summary fields
+    p0  = applied[0]
+    removed_pct = round(
+        (1.0 - (p0["end_vox"] - p0["start_vox"] + 1) / p0["n"]) * 100.0, 1
+    )
+    return {
+        "cropped":     True,
+        "path":        out_path,
+        "removed_pct": removed_pct,
+        "si_axis":     p0["si_axis"],
+        "orig_shape":  orig_shape,
+        "crop_start":  p0["start_vox"],
+        "crop_end":    p0["end_vox"],
+        "crops":       applied,
+    }
+
+
 def get_fov_profiles(input_path: str) -> dict:
     """
     Public API — compute cross-sectional area profiles for all 3 axes.
@@ -498,11 +574,28 @@ def get_fov_profiles(input_path: str) -> dict:
     ratios  = [max(p) / (sum(p) / len(p) + 1e-6) for p in profiles]
     si_axis = int(ratios.index(max(ratios)))
 
+    # axis_neg[i] = True when voxel-0 is at the anatomically HIGH end of that axis.
+    axis_neg = []
+    # dom_map: world axis (0=LR, 1=AP, 2=SI) → NIfTI voxel axis
+    dom_map: dict[int, int] = {}
+    for ax in range(3):
+        dom = int(np.abs(affine[:3, ax]).argmax())  # dominant world-space row
+        axis_neg.append(bool(affine[dom, ax] < 0))
+        dom_map[dom] = ax
+
+    lr_axis = dom_map.get(0, 0)
+    ap_axis = dom_map.get(1, 1)
+    si_axis_aff = dom_map.get(2, 2)  # affine-based SI (more reliable than profile ratio)
+
     return {
-        "profiles": profiles,
-        "si_axis":  si_axis,
-        "shape":    shape,
-        "voxel_mm": voxel_mm,
+        "profiles":   profiles,
+        "si_axis":    si_axis,      # profile-based SI axis (legacy)
+        "si_axis_aff": si_axis_aff, # affine-based SI axis  (preferred)
+        "ap_axis":    ap_axis,
+        "lr_axis":    lr_axis,
+        "shape":      shape,
+        "voxel_mm":   voxel_mm,
+        "axis_neg":   axis_neg,
     }
 
 

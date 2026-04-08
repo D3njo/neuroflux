@@ -449,18 +449,22 @@ def manual_crop():
 
     if not path or not os.path.isfile(path):
         return jsonify({"error": f"File not found: {path}"}), 400
-    if si_axis is None or start_vox is None or end_vox is None:
-        return jsonify({"error": "si_axis, start_vox and end_vox are required"}), 400
-
-    from neuroflux.segment import manual_crop_fov
 
     fov_dir  = os.path.join(tempfile.gettempdir(), "neuroflux_fov")
     os.makedirs(fov_dir, exist_ok=True)
     stem     = os.path.splitext(os.path.basename(path))[0].removesuffix(".nii")
     out_path = os.path.join(fov_dir, f"{stem}_manual_crop.nii.gz")
 
+    crops = body.get("crops")
     try:
-        result = manual_crop_fov(path, out_path, int(si_axis), int(start_vox), int(end_vox))
+        if crops:
+            from neuroflux.segment import manual_crop_fov_multi
+            result = manual_crop_fov_multi(path, out_path, crops)
+        else:
+            if si_axis is None or start_vox is None or end_vox is None:
+                return jsonify({"error": "crops array or si_axis/start_vox/end_vox required"}), 400
+            from neuroflux.segment import manual_crop_fov
+            result = manual_crop_fov(path, out_path, int(si_axis), int(start_vox), int(end_vox))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
