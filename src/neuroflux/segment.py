@@ -454,6 +454,58 @@ def manual_crop_fov(
     }
 
 
+def get_fov_profiles(input_path: str) -> dict:
+    """
+    Public API — compute cross-sectional area profiles for all 3 axes.
+
+    Used by the browser FOV crop UI to draw the profile graph.
+
+    Returns
+    -------
+    {
+      "profiles":  [[...], [...], [...]],   # one list per axis, length = n_slices
+      "si_axis":   int,                     # detected SI axis (0/1/2)
+      "shape":     [X, Y, Z],
+      "voxel_mm":  [dx, dy, dz],
+    }
+    Each profile value is the cross-sectional area (number of non-background
+    voxels) at that slice index along the corresponding axis.
+    """
+    import gc
+
+    img         = nib.load(input_path)
+    affine      = img.affine
+    voxel_mm    = [round(float(v), 4) for v in np.sqrt((affine[:3, :3] ** 2).sum(axis=0))]
+    shape       = list(img.shape[:3])
+    data        = img.get_fdata(dtype=np.float32)
+    del img
+    gc.collect()
+
+    nonzero = data[data > 0]
+    thresh  = float(np.percentile(nonzero, 2)) if len(nonzero) > 1000 else 0.0
+    del nonzero
+    mask = (data > thresh)
+    del data
+    gc.collect()
+
+    profiles = []
+    for ax in range(3):
+        other = tuple(i for i in range(3) if i != ax)
+        profiles.append(mask.sum(axis=other).astype(int).tolist())
+    del mask
+    gc.collect()
+
+    ratios  = [max(p) / (sum(p) / len(p) + 1e-6) for p in profiles]
+    si_axis = int(ratios.index(max(ratios)))
+
+    return {
+        "profiles": profiles,
+        "si_axis":  si_axis,
+        "shape":    shape,
+        "voxel_mm": voxel_mm,
+    }
+
+
 def _has_real_swap() -> bool:
     """
     Return True only if the system has real disk-backed swap (file or partition).

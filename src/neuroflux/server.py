@@ -406,6 +406,28 @@ def analyze_fov():
     return jsonify(result)
 
 
+@app.post("/fov_profile")
+def fov_profile():
+    """
+    Return cross-sectional area profiles for all three axes of a NIfTI file.
+    Used by the browser FOV crop UI to draw the profile graph.
+
+    Body: {"path": "/abs/path/to/file.nii.gz"}
+    Returns: {"profiles": [[...],[...],[...]], "si_axis": int,
+              "shape": [X,Y,Z], "voxel_mm": [dx,dy,dz]}
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    path = body.get("path", "").strip()
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": f"File not found: {path}"}), 400
+    from neuroflux.segment import get_fov_profiles
+    try:
+        result = get_fov_profiles(path)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify(result)
+
+
 @app.post("/manual_crop")
 def manual_crop():
     """

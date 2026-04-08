@@ -1113,33 +1113,45 @@
   </div>
 
 
-  <!-- FOV Adjust modal -->
-  <div id="fov-modal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;">
-    <div style="background:#0a0a0f;border:1px solid var(--cyan);padding:24px 28px;min-width:320px;max-width:420px;font-family:var(--font-mono);">
-      <h3 style="margin:0 0 12px;font-size:11px;letter-spacing:2px;color:var(--cyan);">FOV CROP SETTINGS</h3>
-      <p style="font-size:9px;color:var(--textdim);margin:0 0 14px;line-height:1.6;" id="fov-modal-info">–</p>
-      <div style="display:grid;gap:8px;margin-bottom:16px;">
-        <label style="font-size:9px;color:var(--textdim);">Axis
-          <select id="fov-adj-axis" style="margin-left:8px;background:#111;color:var(--cyan);border:1px solid #333;font-family:inherit;font-size:9px;padding:2px 4px;">
-            <option value="0">X (left-right)</option>
-            <option value="1">Y (anterior-posterior)</option>
-            <option value="2">Z (superior-inferior)</option>
-          </select>
-        </label>
-        <label style="font-size:9px;color:var(--textdim);">Start voxel
-          <input id="fov-adj-start" type="number" min="0" step="1"
-            style="margin-left:8px;width:70px;background:#111;color:var(--cyan);border:1px solid #333;font-family:inherit;font-size:9px;padding:2px 4px;">
-        </label>
-        <label style="font-size:9px;color:var(--textdim);">End voxel
-          <input id="fov-adj-end" type="number" min="0" step="1"
-            style="margin-left:8px;width:70px;background:#111;color:var(--cyan);border:1px solid #333;font-family:inherit;font-size:9px;padding:2px 4px;">
-        </label>
+  <!-- FOV Crop modal — profile graph + overlay lines on viewer -->
+  <div id="fov-modal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.82);align-items:center;justify-content:center;">
+    <div style="background:#0a0a0f;border:1px solid var(--cyan);padding:20px 24px;width:520px;max-width:96vw;font-family:var(--font-mono);box-sizing:border-box;">
+      <h3 style="margin:0 0 10px;font-size:11px;letter-spacing:2px;color:var(--cyan);">✂ FOV CROP</h3>
+
+      <!-- Axis selector -->
+      <div style="display:flex;gap:6px;margin-bottom:10px;">
+        <span style="font-size:9px;color:var(--textdim);line-height:22px;">AXIS</span>
+        <button id="fov-ax-0" class="btn" onclick="_fovSetAxis(0)" style="font-size:9px;padding:3px 8px;">X (L–R)</button>
+        <button id="fov-ax-1" class="btn" onclick="_fovSetAxis(1)" style="font-size:9px;padding:3px 8px;">Y (A–P)</button>
+        <button id="fov-ax-2" class="btn" onclick="_fovSetAxis(2)" style="font-size:9px;padding:3px 8px;">Z (S–I)</button>
       </div>
-      <div id="fov-adj-status" style="font-size:9px;color:var(--red);min-height:12px;margin-bottom:10px;"></div>
+
+      <!-- Profile canvas — drag the handles to set crop bounds -->
+      <div style="position:relative;margin-bottom:8px;">
+        <canvas id="fov-canvas" width="472" height="130"
+          style="width:100%;height:130px;display:block;cursor:col-resize;background:#050508;border:1px solid #1a1a2e;"
+          onmousedown="_fovMD(event)" ontouchstart="_fovTD(event)">
+        </canvas>
+        <div style="font-size:8px;color:var(--textdim);margin-top:3px;text-align:center;">
+          Drag the cyan handles to set crop boundaries · dark regions will be excluded
+        </div>
+      </div>
+
+      <!-- Range display -->
+      <div style="display:flex;gap:16px;margin-bottom:10px;font-size:9px;color:var(--textdim);">
+        <span>Start: <span id="fov-disp-start" style="color:var(--cyan);">—</span> vox</span>
+        <span>End: <span id="fov-disp-end" style="color:var(--cyan);">—</span> vox</span>
+        <span>Keep: <span id="fov-disp-keep" style="color:var(--cyan);">—</span></span>
+        <span id="fov-disp-mm" style="color:var(--yellow);">—</span>
+      </div>
+
+      <div id="fov-adj-status" style="font-size:9px;color:var(--red);min-height:12px;margin-bottom:8px;"></div>
+
       <div style="display:flex;gap:8px;">
         <button class="btn" onclick="_fovAdjApply()">⬡ APPLY CROP</button>
-        <button class="btn" onclick="_fovAdjAuto()"  title="Re-run auto-detection">↺ AUTO</button>
-        <button class="btn mg" onclick="_fovAdjClose()">✕ CANCEL</button>
+        <button class="btn" onclick="_fovAdjAuto()" title="Re-run auto-detection">↺ AUTO DETECT</button>
+        <button class="btn" onclick="_fovClearCrop()" title="Remove crop — use full FOV">✕ CLEAR CROP</button>
+        <button class="btn mg" onclick="_fovAdjClose()">CANCEL</button>
       </div>
     </div>
   </div>
@@ -1659,8 +1671,8 @@ async function load(file) {
       id('btn-cancel-seg').style.display = 'none';
       id('btn-export3d').disabled = true;
       // Reset FOV crop state for the new file
-      _fovOrigPath = null; _fovCroppedPath = null; _fovCropInfo = null;
-      _hideFovBanner();
+      _fovOrigPath = null; _fovCroppedPath = null; _fovCropInfo = null; _fovProfiles = null;
+      _hideFovBanner(); _fovDrawOverlay(null);
     }
 
     prog(8, 'READING FILE…');
@@ -1737,8 +1749,8 @@ async function load(file) {
 
     // Background: upload to server and analyse FOV so user can adjust before clicking run.
     // Runs silently — if the server is not running yet, fails without impacting the viewer.
-    _fovOrigPath = null; _fovCroppedPath = null; _fovCropInfo = null;
-    _hideFovBanner();
+    _fovOrigPath = null; _fovCroppedPath = null; _fovCropInfo = null; _fovProfiles = null;
+    _hideFovBanner(); _fovDrawOverlay(null);
     _bgFovAnalyze(file);
 
   } catch(e) {
@@ -3489,62 +3501,292 @@ async function loadSession(outputs) {
 let _pendingInputPath = null;
 let _existingOutputs  = null;
 
-// FOV crop state
+// ── FOV crop state ────────────────────────────────────────────────────────────
 let _fovOrigPath    = null;  // original uploaded path (before any FOV crop)
 let _fovCroppedPath = null;  // path to server-side FOV-cropped file (null = no crop)
-let _fovCropInfo    = null;  // {removed_pct, si_axis, orig_shape, crop_start, crop_end}
+let _fovCropInfo    = null;  // last crop/profile info from server
+let _fovProfiles    = null;  // {profiles:[[…],[…],[…]], si_axis, shape, voxel_mm}
+let _fovAxis        = 2;     // currently displayed axis in profile canvas
+let _fovStart       = 0;     // current start voxel
+let _fovEnd         = 255;   // current end voxel
+let _fovDrag        = null;  // 'start' | 'end' | null
 
-const _AXIS_NAMES = ['X (left-right)', 'Y (anterior-posterior)', 'Z (superior-inferior)'];
+const _AXIS_NAMES   = ['X (L–R)', 'Y (A–P)', 'Z (S–I)'];
+const _AXIS_FULL    = ['X (left-right)', 'Y (anterior-posterior)', 'Z (superior-inferior)'];
 
+// ── Banner helpers ────────────────────────────────────────────────────────────
 function _showFovBanner(info) {
   const banner = id('fov-banner');
   const msg    = id('fov-banner-msg');
   if (!banner || !msg) return;
-  const axis = _AXIS_NAMES[info.si_axis] || `axis ${info.si_axis}`;
+  const axis = _AXIS_FULL[info.si_axis] ?? `axis ${info.si_axis}`;
   msg.textContent = `Brain FOV pre-cropped (${info.removed_pct}% removed, ${axis})`;
   banner.style.display = '';
 }
-
 function _hideFovBanner() {
-  const banner = id('fov-banner');
-  if (banner) banner.style.display = 'none';
+  const el = id('fov-banner');
+  if (el) el.style.display = 'none';
 }
 
+// ── Banner buttons ────────────────────────────────────────────────────────────
 function fovUndo() {
-  if (!_fovOrigPath) return;
-  _fovCroppedPath = null;
-  _fovCropInfo    = null;
+  _fovCroppedPath   = null;
+  _fovCropInfo      = null;
   _pendingInputPath = _fovOrigPath;
   _hideFovBanner();
+  _fovDrawOverlay(null);   // clear overlay lines
+}
+function fovAdjust() { _fovOpenModal(); }
+
+// ── Viewer overlay — draw FOV boundary lines on the 2-D panel canvases ───────
+// Shows which slices are inside the crop without reloading the scan.
+// We draw on a transparent overlay canvas positioned over each NiiVue canvas.
+const _fovOverlayCanvases = {};
+
+function _fovOverlay(nvId, nvObj) {
+  if (!nvObj?.canvas) return;
+  const parent = nvObj.canvas.parentElement;
+  if (!parent) return;
+  let oc = _fovOverlayCanvases[nvId];
+  if (!oc) {
+    oc = document.createElement('canvas');
+    oc.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:10;';
+    parent.style.position = 'relative';
+    parent.appendChild(oc);
+    _fovOverlayCanvases[nvId] = oc;
+  }
+  return oc;
 }
 
-function fovAdjust() {
-  const info = _fovCropInfo;
-  const orig = info?.orig_shape || [];
+function _fovDrawOverlay(cropInfo) {
+  // Draw (or clear) horizontal/vertical crop boundary lines on each 2-D panel.
+  // cropInfo: null → clear all overlays; else {si_axis, crop_start, crop_end, orig_shape}
+  const nvPairs = [['nv1',nv1],['nv2',nv2],['nv3',nv3]];
+  nvPairs.forEach(([nvId, nvObj]) => {
+    const oc = _fovOverlay(nvId, nvObj);
+    if (!oc) return;
+    oc.width  = nvObj.canvas.width;
+    oc.height = nvObj.canvas.height;
+    const ctx = oc.getContext('2d');
+    ctx.clearRect(0, 0, oc.width, oc.height);
+    if (!cropInfo) return;
 
-  const axSel   = id('fov-adj-axis');
-  const startIn = id('fov-adj-start');
-  const endIn   = id('fov-adj-end');
-  const infoEl  = id('fov-modal-info');
+    const {si_axis, crop_start, crop_end, orig_shape} = cropInfo;
+    if (si_axis == null || !orig_shape) return;
 
-  // Pre-fill with current crop params (or safe defaults)
-  const axis = info?.si_axis ?? 2;
-  if (axSel)   axSel.value   = axis;
-  if (startIn) startIn.value = info?.crop_start ?? 0;
-  if (endIn)   endIn.value   = info?.crop_end   ?? (orig[axis] ?? 256) - 1;
+    const n = orig_shape[si_axis];
+    const t = crop_start / n;      // 0-1 fraction where crop starts
+    const b = (crop_end + 1) / n;  // 0-1 fraction where crop ends
 
-  const shapeStr = orig.length ? `${orig[0]}×${orig[1]}×${orig[2]} vox` : '–';
-  let hint = `Original scan: ${shapeStr}.`;
-  if (_fovCroppedPath && info) {
-    hint += ` Auto-crop removed ${info.removed_pct}% along ${_AXIS_NAMES[info.si_axis]}.`;
-  } else if (!_fovOrigPath) {
-    hint += ' Load a file and let it upload to the server first (or click AUTO to trigger now).';
-  } else {
-    hint += ' No large FOV detected. Use AUTO to re-run, or set a manual range.';
+    // Each NiiVue 2-D panel renders one slice view.
+    // nv1 = axial (shows XY → Z is "depth"), nv2 = sagittal (shows YZ → X is depth), nv3 = coronal (shows XZ → Y is depth)
+    // For the axis being cropped, the boundary appears as lines in the panels
+    // where that axis is the "scroll" axis.
+    // Orientation mapping: axial scrolls Z, sagittal scrolls X, coronal scrolls Y.
+    const panelScrollAxis = { nv1: 2, nv2: 0, nv3: 1 };
+    const thisAxis = panelScrollAxis[nvId];
+    if (thisAxis !== si_axis) return;  // this panel doesn't show the cropped axis as lines
+
+    // In this 2-D panel the cropped axis goes either top→bottom or left→right.
+    // NiiVue axial: Z increases upward so top = high Z, bottom = low Z.
+    // We approximate: draw two horizontal lines across the panel.
+    ctx.strokeStyle = 'rgba(0,255,240,0.9)';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([6, 4]);
+
+    // For axial (Z), top of canvas ≈ high Z
+    const yTop = (1 - b) * oc.height;
+    const yBot = (1 - t) * oc.height;
+
+    // Draw top crop line
+    ctx.beginPath(); ctx.moveTo(0, yTop); ctx.lineTo(oc.width, yTop); ctx.stroke();
+    // Draw bottom crop line
+    ctx.beginPath(); ctx.moveTo(0, yBot); ctx.lineTo(oc.width, yBot); ctx.stroke();
+
+    // Shade excluded regions
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, oc.width, yTop);
+    ctx.fillRect(0, yBot, oc.width, oc.height - yBot);
+
+    // Labels
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(0,255,240,0.85)';
+    ctx.font = '10px monospace';
+    ctx.fillText(`▸ ${crop_start}`, 4, yTop + 12);
+    ctx.fillText(`▾ ${crop_end}`,   4, yBot - 4);
+  });
+}
+
+// ── Profile canvas draw ───────────────────────────────────────────────────────
+function _fovDrawProfile() {
+  const canvas = id('fov-canvas');
+  if (!canvas) return;
+  const ctx  = canvas.getContext('2d');
+  const W    = canvas.width;
+  const H    = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const prof = _fovProfiles?.profiles?.[_fovAxis];
+  if (!prof || prof.length === 0) {
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#444';
+    ctx.font = '11px monospace';
+    ctx.fillText('Loading profile…', W/2 - 60, H/2);
+    return;
   }
-  if (infoEl) infoEl.textContent = hint;
+
+  const n    = prof.length;
+  const maxV = Math.max(...prof) || 1;
+  const bw   = W / n;  // bar width
+
+  for (let i = 0; i < n; i++) {
+    const bh     = (prof[i] / maxV) * (H - 18);
+    const inside = (i >= _fovStart && i <= _fovEnd);
+    ctx.fillStyle = inside ? 'rgba(0,255,240,0.55)' : 'rgba(0,255,240,0.10)';
+    ctx.fillRect(i * bw, H - 18 - bh, Math.max(bw - 0.5, 0.8), bh);
+  }
+
+  // Axis tick labels
+  ctx.fillStyle = '#555';
+  ctx.font = '9px monospace';
+  ctx.fillText('0', 2, H - 4);
+  ctx.fillText(String(n - 1), W - 28, H - 4);
+
+  // Excluded region shading
+  ctx.fillStyle = 'rgba(0,0,0,0.38)';
+  ctx.fillRect(0, 0, _fovStart * bw, H - 18);
+  ctx.fillRect((_fovEnd + 1) * bw, 0, W - (_fovEnd + 1) * bw, H - 18);
+
+  // Handle lines
+  const drawHandle = (vox, label) => {
+    const x = (vox + 0.5) * bw;
+    ctx.strokeStyle = '#00fff0';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H - 18); ctx.stroke();
+    // Handle triangle at top
+    ctx.fillStyle = '#00fff0';
+    ctx.beginPath(); ctx.moveTo(x-5,0); ctx.lineTo(x+5,0); ctx.lineTo(x,8); ctx.closePath(); ctx.fill();
+    // Label
+    ctx.fillStyle = '#00fff0';
+    ctx.font = '9px monospace';
+    ctx.fillText(label, x < W - 30 ? x + 3 : x - 28, 18);
+  };
+  drawHandle(_fovStart, `${_fovStart}`);
+  drawHandle(_fovEnd,   `${_fovEnd}`);
+
+  // Update display row
+  const vm = _fovProfiles?.voxel_mm?.[_fovAxis] ?? 1;
+  const keepVox = _fovEnd - _fovStart + 1;
+  const keepMm  = Math.round(keepVox * vm);
+  const totalMm = Math.round(n * vm);
+  const el = id('fov-disp-start'); if (el) el.textContent = _fovStart;
+  const el2= id('fov-disp-end');   if (el2) el2.textContent = _fovEnd;
+  const el3= id('fov-disp-keep');  if (el3) el3.textContent = `${keepVox}/${n} vox`;
+  const el4= id('fov-disp-mm');    if (el4) el4.textContent = `${keepMm} mm of ${totalMm} mm`;
+}
+
+// ── Mouse / touch drag ────────────────────────────────────────────────────────
+function _fovCanvasVox(clientX) {
+  const canvas = id('fov-canvas');
+  const rect   = canvas.getBoundingClientRect();
+  const n      = _fovProfiles?.profiles?.[_fovAxis]?.length ?? 256;
+  return Math.max(0, Math.min(n - 1, Math.round(((clientX - rect.left) / rect.width) * n)));
+}
+function _fovMD(e) {
+  if (e.button !== 0) return;
+  const vox    = _fovCanvasVox(e.clientX);
+  const dStart = Math.abs(vox - _fovStart);
+  const dEnd   = Math.abs(vox - _fovEnd);
+  _fovDrag = dStart <= dEnd ? 'start' : 'end';
+  window.addEventListener('mousemove', _fovMM);
+  window.addEventListener('mouseup',   _fovMU);
+  e.preventDefault();
+}
+function _fovMM(e) {
+  if (!_fovDrag) return;
+  const vox = _fovCanvasVox(e.clientX);
+  if (_fovDrag === 'start') _fovStart = Math.min(vox, _fovEnd - 1);
+  else                       _fovEnd   = Math.max(vox, _fovStart + 1);
+  _fovDrawProfile();
+}
+function _fovMU()  { _fovDrag = null; window.removeEventListener('mousemove', _fovMM); window.removeEventListener('mouseup', _fovMU); }
+function _fovTD(e) { _fovMD({ button:0, clientX: e.touches[0].clientX, preventDefault: ()=>e.preventDefault() }); }
+
+// ── Axis selector ─────────────────────────────────────────────────────────────
+function _fovSetAxis(ax) {
+  _fovAxis = ax;
+  const n  = _fovProfiles?.profiles?.[ax]?.length ?? 256;
+  _fovStart = 0;
+  _fovEnd   = n - 1;
+  // Highlight active button
+  [0,1,2].forEach(i => {
+    const b = id(`fov-ax-${i}`);
+    if (b) b.style.borderColor = i === ax ? 'var(--cyan)' : '';
+  });
+  _fovDrawProfile();
+}
+
+// ── Open modal ────────────────────────────────────────────────────────────────
+async function fovAdjust() {
   id('fov-adj-status').textContent = '';
   id('fov-modal').style.display = 'flex';
+
+  // Pre-fill with existing crop info if available
+  const info = _fovCropInfo;
+  if (info?.si_axis != null) {
+    _fovAxis  = info.si_axis;
+    _fovStart = info.crop_start ?? 0;
+    _fovEnd   = info.crop_end   ?? (info.orig_shape?.[info.si_axis] ?? 256) - 1;
+  }
+  [0,1,2].forEach(i => {
+    const b = id(`fov-ax-${i}`);
+    if (b) b.style.borderColor = i === _fovAxis ? 'var(--cyan)' : '';
+  });
+
+  if (_fovProfiles) {
+    _fovDrawProfile();
+    return;
+  }
+
+  if (!_fovOrigPath) {
+    id('fov-adj-status').textContent = 'No file uploaded yet — load a file and wait for background upload.';
+    id('fov-adj-status').style.color = 'var(--red)';
+    _fovDrawProfile();
+    return;
+  }
+
+  id('fov-adj-status').textContent = 'Loading profile…';
+  id('fov-adj-status').style.color = 'var(--cyan)';
+  _fovDrawProfile();
+  try {
+    const res = await fetch(`${SEG_SERVER}/fov_profile`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: _fovOrigPath}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    _fovProfiles = data;
+    // Use detected SI axis by default if no crop set yet
+    if (!info?.si_axis != null) {
+      _fovAxis  = data.si_axis;
+      _fovStart = 0;
+      _fovEnd   = data.profiles[_fovAxis].length - 1;
+    }
+    [0,1,2].forEach(i => {
+      const b = id(`fov-ax-${i}`);
+      if (b) b.style.borderColor = i === _fovAxis ? 'var(--cyan)' : '';
+    });
+    id('fov-adj-status').textContent = `Auto-detected axis: ${_AXIS_NAMES[data.si_axis]}`;
+    id('fov-adj-status').style.color = 'var(--textdim)';
+    _fovDrawProfile();
+  } catch(e) {
+    id('fov-adj-status').textContent = 'Error loading profile: ' + e.message;
+    id('fov-adj-status').style.color = 'var(--red)';
+  }
 }
 
 function _fovAdjClose() {
@@ -3552,38 +3794,37 @@ function _fovAdjClose() {
 }
 
 async function _fovAdjApply() {
-  const sourcePath = _fovOrigPath;
-  if (!sourcePath) {
-    id('fov-adj-status').textContent = 'No file on server yet — close and load/upload the file first.';
+  if (!_fovOrigPath) {
+    id('fov-adj-status').textContent = 'No file on server — wait for background upload to finish.';
     id('fov-adj-status').style.color = 'var(--red)';
     return;
   }
-
-  const axis  = parseInt(id('fov-adj-axis').value);
-  const start = parseInt(id('fov-adj-start').value);
-  const end   = parseInt(id('fov-adj-end').value);
-
-  id('fov-adj-status').textContent = 'Applying crop…';
+  id('fov-adj-status').textContent = 'Cropping…';
   id('fov-adj-status').style.color = 'var(--cyan)';
   try {
     const res = await fetch(`${SEG_SERVER}/manual_crop`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path: sourcePath, si_axis: axis, start_vox: start, end_vox: end}),
+      body: JSON.stringify({
+        path: _fovOrigPath, si_axis: _fovAxis,
+        start_vox: _fovStart, end_vox: _fovEnd,
+      }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     if (data.cropped) {
-      _fovCroppedPath = data.path;
-      _fovCropInfo    = data;
-      _pendingInputPath = data.path;
+      _fovCroppedPath   = data.path;
+      _fovCropInfo      = data;
+      _pendingInputPath  = data.path;
       _showFovBanner(data);
+      _fovDrawOverlay(data);
     } else {
-      _fovCroppedPath = null;
-      _fovCropInfo    = null;
-      _pendingInputPath = _fovOrigPath;
+      _fovCroppedPath   = null;
+      _fovCropInfo      = null;
+      _pendingInputPath  = _fovOrigPath;
       _hideFovBanner();
+      _fovDrawOverlay(null);
     }
     _fovAdjClose();
   } catch(e) {
@@ -3593,39 +3834,51 @@ async function _fovAdjApply() {
 }
 
 async function _fovAdjAuto() {
-  const sourcePath = _fovOrigPath;
-  if (!sourcePath) { _fovAdjClose(); return; }
+  if (!_fovOrigPath) { return; }
   id('fov-adj-status').textContent = 'Running auto-detection…';
   id('fov-adj-status').style.color = 'var(--cyan)';
   try {
     const res = await fetch(`${SEG_SERVER}/analyze_fov`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path: sourcePath}),
+      body: JSON.stringify({path: _fovOrigPath}),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     if (data.cropped) {
-      _fovCroppedPath = data.path;
-      _fovCropInfo    = data;
-      _pendingInputPath = data.path;
-      // Update inputs with detected values
-      if (id('fov-adj-axis'))  id('fov-adj-axis').value  = data.si_axis;
-      if (id('fov-adj-start')) id('fov-adj-start').value = data.crop_start;
-      if (id('fov-adj-end'))   id('fov-adj-end').value   = data.crop_end;
+      _fovAxis  = data.si_axis;
+      _fovStart = data.crop_start;
+      _fovEnd   = data.crop_end;
+      [0,1,2].forEach(i => {
+        const b = id(`fov-ax-${i}`);
+        if (b) b.style.borderColor = i === _fovAxis ? 'var(--cyan)' : '';
+      });
       id('fov-adj-status').textContent = `Auto: ${data.removed_pct}% removed`;
-      _showFovBanner(data);
+      id('fov-adj-status').style.color = 'var(--textdim)';
     } else {
-      id('fov-adj-status').textContent = 'No large FOV detected — crop not needed.';
-      _fovCroppedPath = null; _fovCropInfo = null;
-      _pendingInputPath = sourcePath;
-      _hideFovBanner();
+      id('fov-adj-status').textContent = 'Auto: no large FOV detected — full FOV selected.';
+      id('fov-adj-status').style.color = 'var(--textdim)';
+      _fovStart = 0;
+      _fovEnd   = (_fovProfiles?.profiles?.[_fovAxis]?.length ?? 256) - 1;
     }
+    _fovDrawProfile();
   } catch(e) {
     id('fov-adj-status').textContent = 'Error: ' + e.message;
     id('fov-adj-status').style.color = 'var(--red)';
   }
+}
+
+function _fovClearCrop() {
+  _fovStart = 0;
+  _fovEnd   = (_fovProfiles?.profiles?.[_fovAxis]?.length ?? 256) - 1;
+  _fovCroppedPath   = null;
+  _fovCropInfo      = null;
+  _pendingInputPath  = _fovOrigPath;
+  _hideFovBanner();
+  _fovDrawOverlay(null);
+  _fovDrawProfile();
+  _fovAdjClose();
 }
 
 function _resegCancel() {
