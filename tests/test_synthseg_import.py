@@ -104,8 +104,9 @@ class TestSynthSegInference:
 
     @pytest.mark.timeout(300)   # 5 min hard cap for CI; overrides the global 30 s default
     def test_run_pipeline_cpu(self, tmp_path):
-        import numpy as np
         import nibabel as nib
+        import numpy as np
+
         from neuroflux.segment import run_pipeline
 
         # 64³ volume — small enough for a CPU smoke test

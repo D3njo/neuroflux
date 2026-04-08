@@ -3,14 +3,8 @@ Flask API tests for neuroflux.server.
 No SynthSeg installation required — segmentation jobs are NOT started.
 """
 import io
-import json
 import os
 import tempfile
-
-import nibabel as nib
-import numpy as np
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # /ping
@@ -22,7 +16,7 @@ class TestPing:
         assert resp.status_code == 200
 
     def test_body_ok_true(self, client):
-        data = resp = client.get("/ping").get_json()
+        data = client.get("/ping").get_json()
         assert data == {"ok": True}
 
 

@@ -17,7 +17,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    # Python 3.12 removed: TF 2.15 has no 3.12 wheels.
+    # Re-add once Keras 3 migration is done (TF 2.16+).
 ]
 
 dependencies = [
@@ -33,6 +34,7 @@ dependencies = [
     # SynthSeg 2.0 is now bundled — TF 2.15 supports Python 3.9-3.11
     # Python 3.12+ will need TF 2.16+ once Keras 3 migration is done
     "tensorflow==2.15.*; python_version < '3.12'",
+    "tqdm>=4.64",
     "h5py>=3.8",
     "matplotlib>=3.7",
     "protobuf>=4.21,<5",
@@ -51,9 +53,28 @@ where = ["src"]
 "neuroflux.synthseg.data.labels_classes_priors" = ["*.npy"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-timeout>=2.3"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.4"]
 # Apple Silicon GPU acceleration
 metal = ["tensorflow-metal>=1.1"]
+
+[tool.ruff]
+# Exclude vendored third-party code — we don't own it and won't fix its style.
+exclude = [
+    "src/neuroflux/synthseg/ext/",
+    "src/neuroflux/synthseg/predict.py",
+    "src/neuroflux/synthseg/predict_synthseg.py",
+    "src/neuroflux/synthseg/predict_qc.py",
+    "src/neuroflux/synthseg/predict_denoiser.py",
+    "src/neuroflux/synthseg/evaluate.py",
+    "src/neuroflux/synthseg/metrics_model.py",
+    "src/neuroflux/synthseg/labels_to_image_model.py",
+    "src/neuroflux/synthseg/model_inputs.py",
+]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]   # pycodestyle errors/warnings + pyflakes + isort
+ignore = ["E501"]                # line-length handled by formatter, not linter
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,7 +1,6 @@
 """
 Shared fixtures for NeuroFlux tests.
 """
-import io
 import os
 import tempfile
 

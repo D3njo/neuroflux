@@ -28,27 +28,65 @@ JSON protocol (stdout)
   {"status": "error", "msg": "..."}
 """
 
-import sys
-import os
+import argparse
 import json
+import os
+import pathlib
+import platform
+import shutil
+import sys
+import tempfile
 import time
 import traceback
-import argparse
-import pathlib
-import shutil
-import tempfile
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 
-from neuroflux.labels import fs_to_tissue, fs_to_hemi, TISSUE_NAMES, HEMI_NAMES
+from neuroflux.labels import HEMI_NAMES, TISSUE_NAMES, fs_to_hemi, fs_to_tissue
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-_HERE       = pathlib.Path(__file__).parent
-_DATA_DIR   = _HERE / "synthseg" / "data" / "labels_classes_priors"
-# Model weights live two levels up from src/neuroflux/ → repo root / models/
-_MODEL_DIR  = _HERE.parent.parent / "models"
+_HERE     = pathlib.Path(__file__).parent
+_DATA_DIR = _HERE / "synthseg" / "data" / "labels_classes_priors"
+
+
+def _resolve_model_dir() -> pathlib.Path:
+    """
+    Locate the model weights directory.
+
+    Resolution order:
+      1. NEUROFLUX_MODELS_DIR environment variable  (explicit override)
+      2. <repo_root>/models/   — works when installed with  pip install -e .
+      3. ~/.local/share/neuroflux/models/            (XDG / standard user dir)
+
+    The first directory that contains at least one .h5 file wins.
+    Falls back to (3) if none of the candidates contain weights yet
+    (neuroflux-setup has not been run), so the error message shows the
+    right path to populate.
+    """
+    candidates = []
+
+    env = os.environ.get("NEUROFLUX_MODELS_DIR")
+    if env:
+        candidates.append(pathlib.Path(env))
+
+    # editable install: __file__ is src/neuroflux/segment.py → ../../../models
+    repo_models = (_HERE / ".." / ".." / ".." / "models").resolve()
+    candidates.append(repo_models)
+
+    # standard user data directory (works for pip install without -e)
+    xdg = pathlib.Path(os.environ.get("XDG_DATA_HOME", pathlib.Path.home() / ".local" / "share"))
+    candidates.append(xdg / "neuroflux" / "models")
+
+    for p in candidates:
+        if p.is_dir() and any(p.glob("*.h5")):
+            return p
+
+    # nothing found yet — return the user dir so setup writes there
+    return candidates[-1]
+
+
+_MODEL_DIR = _resolve_model_dir()
 
 
 # ── Progress / status emitters ────────────────────────────────────────────────
@@ -65,7 +103,7 @@ def _error(msg):
 
 # ── TF configuration (must run before any TF import) ─────────────────────────
 
-def _configure_tf(threads: int):
+def _configure_tf(threads: int, low_memory: bool = False):
     """
     Configure TensorFlow before it initialises.
     - Suppress noisy startup logs.
@@ -73,6 +111,7 @@ def _configure_tf(threads: int):
       (critical on unified-memory / low-RAM systems like Apple Silicon or
        ChromeOS Flex with 8 GB).
     - Wire the --threads argument to TF's inter/intra-op thread counts.
+    - low_memory: enable mixed float16 precision to halve model RAM usage.
     """
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
@@ -88,22 +127,50 @@ def _configure_tf(threads: int):
         except RuntimeError:
             pass  # device already initialised
 
+    if low_memory:
+        tf.keras.mixed_precision.set_global_policy("mixed_float16")
 
-# ── Model weight check ────────────────────────────────────────────────────────
+    # ── Apple Silicon hint ────────────────────────────────────────────────────
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        gpus = tf.config.list_physical_devices("GPU")
+        if not gpus:
+            print(
+                "[neuroflux] Apple Silicon detected but no Metal GPU found.\n"
+                "            Install the GPU plugin for faster inference:\n"
+                '            pip install "neuroflux[metal]"',
+                file=sys.stderr,
+            )
+
+
+# ── Model weight check + version check ───────────────────────────────────────
 
 def _check_models(robust: bool):
-    """Raise a descriptive error when required .h5 weights are missing."""
+    """
+    Raise a descriptive error when required .h5 weights are missing or
+    are clearly wrong files (size < 1 MB — e.g. a stale placeholder).
+    """
     needed = [
         "synthseg_2.0.h5" if not robust else "synthseg_robust_2.0.h5",
         "synthseg_qc_2.0.h5",
     ]
-    missing = [f for f in needed if not (_MODEL_DIR / f).is_file()]
-    if missing:
+    missing, corrupt = [], []
+    for fname in needed:
+        p = _MODEL_DIR / fname
+        if not p.is_file():
+            missing.append(fname)
+        elif p.stat().st_size < 1_000_000:
+            corrupt.append(fname)
+
+    if missing or corrupt:
+        lines = []
+        if missing:
+            lines += ["Missing:"] + [f"  {f}" for f in missing]
+        if corrupt:
+            lines += ["Too small (re-download):"] + [f"  {f}" for f in corrupt]
         raise RuntimeError(
-            "Model weights not found. Run setup first:\n"
+            "Model weights not found or corrupt. Run setup first:\n"
             "  neuroflux-setup\n"
-            "Missing in {}:\n".format(_MODEL_DIR)
-            + "\n".join(f"  {f}" for f in missing)
+            "Models dir: {}\n".format(_MODEL_DIR) + "\n".join(lines)
         )
 
 
@@ -113,13 +180,14 @@ def _run_synthseg(
     input_path, seg_path, resampled_path,
     posteriors_path, volumes_path, qc_path,
     robust=False, fast=False, threads=1, use_ct=False,
+    low_memory=False,
 ):
     """
     Call SynthSeg's predict() directly in-process.
     Replaces the old subprocess approach (no separate venv needed).
     """
     # TF must be configured before the first TF import
-    _configure_tf(threads)
+    _configure_tf(threads, low_memory=low_memory)
 
     # Lazy import — keeps TF out of module-load time
     from neuroflux.synthseg.predict_synthseg import predict as _ss_predict
@@ -258,6 +326,7 @@ def run_pipeline(
     fast=False,
     threads=1,
     use_ct=False,
+    low_memory=False,
 ):
     """
     Run the full NEUROFLUX v2.0 segmentation pipeline.
@@ -271,6 +340,8 @@ def run_pipeline(
                             Ignored when robust=True.
     threads    : int        CPU threads for SynthSeg inference.
     use_ct     : bool       True for CT scans (clips to [0, 80] HU).
+    low_memory : bool       Enable mixed float16 precision to halve model RAM.
+                            Useful on 8 GB systems (ChromeOS Flex, older M1).
 
     Returns
     -------
@@ -328,6 +399,7 @@ def run_pipeline(
             fast=fast,
             threads=threads,
             use_ct=use_ct,
+            low_memory=low_memory,
         )
 
         if not os.path.isfile(fs_seg_path):
@@ -391,6 +463,9 @@ def _build_parser():
                    help="CPU threads for SynthSeg inference (default: 1)")
     p.add_argument("--ct", action="store_true",
                    help="Input is a CT scan in Hounsfield units")
+    p.add_argument("--low-memory", action="store_true",
+                   help="Enable mixed float16 precision to halve GPU/RAM usage "
+                        "(recommended on 8 GB systems)")
     return p
 
 
@@ -405,6 +480,7 @@ def main():
             fast=args.fast,
             threads=args.threads,
             use_ct=args.ct,
+            low_memory=args.low_memory,
         )
         print(f"\nDone in {time.time()-t0:.0f}s")
         for k, v in result.items():

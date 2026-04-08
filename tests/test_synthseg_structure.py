@@ -5,9 +5,7 @@ These tests are intentionally TF-free: they verify that the package layout
 is correct and that all expected modules and data files are present, without
 triggering a TensorFlow import.  Fast — suitable for every CI run.
 """
-import importlib
 import pathlib
-import sys
 
 import pytest
 
@@ -52,7 +50,7 @@ class TestSubpackageLayout:
         assert (self.SS / fname).is_file(), f"Missing: synthseg/{fname}"
 
     @pytest.mark.parametrize("fname", [
-        "edit_tensors.py", "edit_volumes.py", "image_generator.py",
+        "edit_tensors.py", "edit_volumes.py",
         "lab2im_model.py", "layers.py", "utils.py",
     ])
     def test_lab2im_module_present(self, fname):

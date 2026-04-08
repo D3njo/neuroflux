@@ -20,10 +20,41 @@ import pathlib
 import sys
 import urllib.request
 
+try:
+    from tqdm import tqdm as _tqdm
+    _HAS_TQDM = True
+except ImportError:
+    _HAS_TQDM = False
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-_HERE       = pathlib.Path(__file__).parent
-_MODELS_DIR = _HERE.parent.parent / "models"   # repo_root/models/
+_HERE = pathlib.Path(__file__).parent
+
+
+def _default_models_dir() -> pathlib.Path:
+    """
+    Same resolution logic as segment._resolve_model_dir — keep in sync.
+    Priority: NEUROFLUX_MODELS_DIR env > repo root/models > user data dir.
+    Always returns the highest-priority writable candidate so that
+    'neuroflux-setup' puts weights where 'neuroflux-segment' will find them.
+    """
+    env = os.environ.get("NEUROFLUX_MODELS_DIR")
+    if env:
+        return pathlib.Path(env)
+
+    repo_models = (_HERE / ".." / ".." / ".." / "models").resolve()
+    # Use repo root when it already exists (editable install) or is writable
+    try:
+        repo_models.mkdir(parents=True, exist_ok=True)
+        return repo_models
+    except OSError:
+        pass
+
+    xdg = pathlib.Path(os.environ.get("XDG_DATA_HOME", pathlib.Path.home() / ".local" / "share"))
+    return xdg / "neuroflux" / "models"
+
+
+_MODELS_DIR = _default_models_dir()
 
 _RELEASE_BASE = (
     "https://github.com/D3njo/neuroflux/releases/download/v1.0-models"
@@ -55,13 +86,24 @@ def _download_models(models_dir: pathlib.Path):
         tmp = pathlib.Path(str(dest) + ".tmp")
         print(f"  Downloading {fname} …")
         try:
-            def _progress(block, block_size, total):
-                if total > 0:
-                    pct = min(100, block * block_size * 100 // total)
-                    print(f"\r    {fname}: {pct}%", end="", flush=True)
+            if _HAS_TQDM:
+                with _tqdm(
+                    unit="B", unit_scale=True, unit_divisor=1024,
+                    miniters=1, desc=f"    {fname}",
+                ) as bar:
+                    def _progress(block, block_size, total, _bar=bar):
+                        if total > 0 and _bar.total is None:
+                            _bar.total = total
+                        _bar.update(block * block_size - _bar.n)
 
-            urllib.request.urlretrieve(url, tmp, reporthook=_progress)
-            print()
+                    urllib.request.urlretrieve(url, tmp, reporthook=_progress)
+            else:
+                def _progress(block, block_size, total):
+                    if total > 0:
+                        pct = min(100, block * block_size * 100 // total)
+                        print(f"\r    {fname}: {pct}%", end="", flush=True)
+                urllib.request.urlretrieve(url, tmp, reporthook=_progress)
+                print()
 
             if tmp.stat().st_size < 1_000_000:
                 tmp.unlink()

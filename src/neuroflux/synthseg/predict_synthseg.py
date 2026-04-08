@@ -28,6 +28,12 @@ from tensorflow.keras.models import Model
 from . import evaluate
 from .predict import write_csv, get_flip_indices
 
+# ── Model cache ───────────────────────────────────────────────────────────────
+# Keeps loaded Keras models alive across predict() calls so the server does
+# not reload ~3 GB of weights on every segmentation request.
+# Key: (path_model_segmentation, robust, do_parcellation, do_qc)
+_MODEL_CACHE: dict = {}
+
 # third-party imports
 from .ext.lab2im import utils
 from .ext.lab2im import layers
@@ -124,20 +130,25 @@ def predict(path_images,
     if unique_qc_file & do_qc:
         write_csv(path_qc_scores[0], None, True, labels_qc, names_qc)
 
-    # build network
-    net = build_model(path_model_segmentation=path_model_segmentation,
-                      path_model_parcellation=path_model_parcellation,
-                      path_model_qc=path_model_qc,
-                      input_shape_qc=input_shape_qc,
-                      labels_segmentation=labels_segmentation,
-                      labels_denoiser=labels_denoiser,
-                      labels_parcellation=labels_parcellation,
-                      labels_qc=labels_qc,
-                      sigma_smoothing=sigma_smoothing,
-                      flip_indices=flip_indices,
-                      robust=robust,
-                      do_parcellation=do_parcellation,
-                      do_qc=do_qc)
+    # build (or retrieve cached) network
+    _cache_key = (path_model_segmentation, robust, do_parcellation, do_qc)
+    if _cache_key in _MODEL_CACHE:
+        net = _MODEL_CACHE[_cache_key]
+    else:
+        net = build_model(path_model_segmentation=path_model_segmentation,
+                          path_model_parcellation=path_model_parcellation,
+                          path_model_qc=path_model_qc,
+                          input_shape_qc=input_shape_qc,
+                          labels_segmentation=labels_segmentation,
+                          labels_denoiser=labels_denoiser,
+                          labels_parcellation=labels_parcellation,
+                          labels_qc=labels_qc,
+                          sigma_smoothing=sigma_smoothing,
+                          flip_indices=flip_indices,
+                          robust=robust,
+                          do_parcellation=do_parcellation,
+                          do_qc=do_qc)
+        _MODEL_CACHE[_cache_key] = net
 
     # set cropping/padding
     if cropping is not None:
