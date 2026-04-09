@@ -45,9 +45,20 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 
 ### 3-D Export (STL)
 - Combined or per-tissue STL meshes
+- **Quality presets** — four named presets tuned for different use-cases:
+
+  | Preset | Best for | What it does |
+  |--------|----------|--------------|
+  | **Standard** | General use | Tissue-optimised σ + Taubin, moderate sulcal enhancement, HC smoothing |
+  | **High Detail** | Resin / SLA, display models | Strong unsharp masking, deep HC passes — maximum sulci & folia |
+  | **Print Ready** | FDM / PLA (0.4 mm nozzle) | Gentle polish, mild sulcal detail, optimised layer resolution |
+  | **Smooth** | WM, CSF, presentations | Heavy Gaussian blur + Taubin — clean dome-like surfaces |
+
+- **Sulcal/folial enhancement** — unsharp masking in volume space before marching cubes recovers detail blurred by Gaussian pre-smoothing; GM and cerebellum benefit most
+- **HC smoothing** (`filter_humphrey`) after Taubin — feature-preserving pass that keeps concavities (sulci, fissures, folia) while reducing surface jaggedness
+- **Watertight repair** — degenerate/duplicate face removal, 3-pass hole fill, normal fix; output is slicer-compatible by default
+- **Flat base** option — clamps bottom 5th-percentile Z vertices flat for print-bed stability
 - Hollow shell with configurable wall thickness
-- Sulci enhancement (curvature-based, GM only)
-- Cerebellum folia enhancement
 - Up to 1.5 M faces
 - **Inline STL viewer** (Three.js r134, lazy-loaded) opens after every export
 
