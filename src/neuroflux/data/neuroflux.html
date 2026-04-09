@@ -1180,7 +1180,6 @@
 
       <div style="display:flex;gap:7px;flex-wrap:wrap;">
         <button id="fov-btn-apply"  class="btn" onclick="_fovAdjApply()">⬡ APPLY &amp; RELOAD</button>
-        <button                     class="btn" onclick="_fovAdjAuto()">↺ AUTO DETECT</button>
         <button id="fov-btn-clear"  class="btn" onclick="_fovClearCrop()">✕ CLEAR CROP</button>
         <button id="fov-btn-cancel" class="btn mg" onclick="_fovAdjClose()">CANCEL</button>
       </div>
@@ -3784,9 +3783,7 @@ function _fovDrawOverlay(cropInfo) {
 
 // ── Modal open ────────────────────────────────────────────────────────────────
 async function _fovOpenModal() {
-  // Always start with full range on all panels.  The user clicks AUTO DETECT
-  // to get the system suggestion, or drags crop lines manually.
-  // This prevents stale / wrong crops from previous interactions persisting.
+  // Always start with full range on all panels to prevent stale crops persisting.
   _fovPanelStart  = [0, 0, 0];
   _fovPanelEnd    = [255, 255, 255];
   _fovActivePanel = 1; // default: SI panel (most common: neck removal)
@@ -4212,45 +4209,6 @@ async function _fovAdjApply() {
   } catch(e) { _fovSetStatus('Error: ' + e.message, true); }
 }
 
-async function _fovAdjAuto() {
-  if (!_fovOrigPath) return;
-  _fovSetStatus('Running auto-detection…');
-  try {
-    const res = await fetch(`${SEG_SERVER}/analyze_fov`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({path:_fovOrigPath}),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    // Always reset ALL panels to full range first, then set only the detected axis.
-    for (let p = 0; p < 3; p++) {
-      const ax = _FOV_PANEL_AXIS[p];
-      _fovPanelStart[p] = 0;
-      _fovPanelEnd[p]   = (_fovProfiles?.shape?.[ax] ?? 256) - 1;
-    }
-    if (data.cropped) {
-      const p = _FOV_PANEL_AXIS.indexOf(data.si_axis);
-      if (p >= 0) {
-        _fovPanelStart[p] = data.crop_start;
-        _fovPanelEnd[p]   = data.crop_end;
-        _fovActivePanel   = p;
-      }
-      _fovSetStatus(`Auto: ${data.removed_pct}% removed along ${_AXIS_FULL[data.si_axis]}`);
-    } else {
-      // No excess found — reset all panels to full range
-      for (let p = 0; p < 3; p++) {
-        const ax = _FOV_PANEL_AXIS[p];
-        _fovPanelStart[p] = 0;
-        _fovPanelEnd[p]   = (_fovProfiles?.shape?.[ax] ?? 256) - 1;
-      }
-      _fovSetStatus('Auto: full FOV — no large excess detected');
-    }
-    _fovHighlightActivePanel();
-    _fovUpdateSliders();
-    _fovRedrawAllOverlays();
-  } catch(e) { _fovSetStatus('Error: ' + e.message, true); }
-}
 
 function _fovClearCrop() {
   const hadCrop = !!_fovCroppedPath;
