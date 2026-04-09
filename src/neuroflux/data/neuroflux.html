@@ -1039,64 +1039,38 @@
       </div>
 
 
-      <!-- Advanced panel -->
-      <div style="margin-top:14px;border-top:1px solid rgba(0,255,240,0.08);padding-top:10px;">
-        <button onclick="_stlToggleAdvanced()" style="background:none;border:none;color:var(--textdim);font-family:var(--font-mono);font-size:8px;letter-spacing:1.5px;cursor:pointer;padding:0;display:flex;align-items:center;gap:6px;">
-          <span id="stl-adv-arrow">▶</span> ADVANCED
-        </button>
-        <div id="stl-adv-wrap" style="display:none;margin-top:10px;">
-          <div class="stl-param">
-            <div class="stl-param-row">
-              <label>GAUSSIAN σ (VOXEL PRE-SMOOTH)</label>
-              <span class="stl-val" id="stl-sigma-val">0.3</span>
-            </div>
-            <input type="range" id="stl-sigma" min="0.3" max="2.0" step="0.1" value="0.3"
-                   oninput="document.getElementById('stl-sigma-val').textContent=parseFloat(this.value).toFixed(1)">
-            <span class="stl-hint">0.3 = sharp voxel edges &nbsp;·&nbsp; 2.0 = very smooth dome</span>
-          </div>
-          <div class="stl-param">
-            <div class="stl-param-row">
-              <label>TAUBIN ITERATIONS</label>
-              <span class="stl-val" id="stl-taubin-val">8</span>
-            </div>
-            <input type="range" id="stl-taubin" min="0" max="50" step="1" value="8"
-                   oninput="document.getElementById('stl-taubin-val').textContent=this.value">
-            <span class="stl-hint">0 = no mesh smoothing &nbsp;·&nbsp; 50 = maximum surface smoothing</span>
-          </div>
-          <div class="stl-param">
-            <div class="stl-param-row">
-              <label>HC ITERATIONS (SULCI)</label>
-              <span class="stl-val" id="stl-hc-val">8</span>
-            </div>
-            <input type="range" id="stl-hc" min="2" max="30" step="1" value="8"
-                   oninput="document.getElementById('stl-hc-val').textContent=this.value">
-            <span class="stl-hint">2 = minimal polish &nbsp;·&nbsp; 30 = full feature-preserving smooth</span>
-          </div>
-          <div class="stl-param">
-            <div class="stl-param-row">
-              <label>SULCI STRENGTH</label>
-              <span class="stl-val" id="stl-sulci-str-val">0.35</span>
-            </div>
-            <input type="range" id="stl-sulci-str" min="0.1" max="0.9" step="0.05" value="0.35"
-                   oninput="document.getElementById('stl-sulci-str-val').textContent=parseFloat(this.value).toFixed(2)">
-            <span class="stl-hint">0.1 = max sulcal detail &nbsp;·&nbsp; 0.9 = more smoothing</span>
-          </div>
-        </div>
-      </div>
+      <!-- Semantic quality controls -->
+      <div style="margin-top:14px;border-top:1px solid rgba(0,255,240,0.08);padding-top:12px;">
 
-      <div id="stl-sulci-depth-wrap" style="display:none;margin:4px 0 0 22px;">
-        <div class="stl-param-row" style="margin-bottom:2px;">
-          <label style="font-size:8px;">DEPTH</label>
-          <span class="stl-val" id="stl-sulci-depth-val">0.5</span>
+        <!-- Surface Smoothness -->
+        <div class="stl-param">
+          <div class="stl-param-row">
+            <label>SURFACE SMOOTHNESS</label>
+            <span class="stl-val" id="stl-smoothness-val">AUTO</span>
+          </div>
+          <input type="range" id="stl-smoothness" min="0" max="100" step="5" value="0"
+                 oninput="_stlSmoothnessInput(this.value)">
+          <span class="stl-hint">AUTO = tissue-optimised &nbsp;·&nbsp; 100 = maximum smoothing</span>
         </div>
-        <input type="range" id="stl-sulci-depth" min="0.1" max="1.5" step="0.1" value="0.5"
-               oninput="document.getElementById('stl-sulci-depth-val').textContent=parseFloat(this.value).toFixed(1)"
-               style="width:100%;">
-        <span class="stl-hint" style="font-size:7px;">subtle → deep sulci</span>
-      </div>
 
-      <!-- Hidden fields kept for JS compatibility -->
-      <input type="hidden" id="stl-sulci" value="1">
+        <!-- Sulcal Detail — only meaningful for GM / cerebellum -->
+        <div class="stl-param" id="stl-sulci-wrap">
+          <div class="stl-param-row">
+            <label>SULCAL DETAIL <span id="stl-sulci-gm-hint" style="color:var(--textdim);font-size:7px;letter-spacing:0;text-transform:none;font-style:italic;"></span></label>
+            <span class="stl-val" id="stl-sulci-val">40%</span>
+          </div>
+          <input type="range" id="stl-sulci-detail" min="0" max="100" step="5" value="40"
+                 oninput="document.getElementById('stl-sulci-val').textContent=this.value+'%'">
+          <span class="stl-hint">0 = smooth surface &nbsp;·&nbsp; 100 = maximum sulci / folia detail</span>
+        </div>
+
+        <!-- Flat Base -->
+        <div class="stl-hollow-row">
+          <input type="checkbox" id="stl-flat-base">
+          <label for="stl-flat-base">FLAT BASE — slice bottom for print bed stability</label>
+        </div>
+
+      </div>
 
       <!-- Export mode -->
       <div class="stl-hollow-row" style="margin-top:14px;">
@@ -3048,10 +3022,13 @@ async function ctBoneSave() {
               format:        'stl',
               filename:      stem,
               timestamp:     ts,
-              stl_sigma:     sigma,
-              stl_taubin:    Math.round(sigma * 4),
-              stl_max_faces: 300000,
-              combined_only: true,
+              stl_sigma:          0,
+              stl_taubin:         0,
+              stl_sulci_enhance:  0.4,
+              stl_hc_iter:        10,
+              stl_flat_base:      false,
+              stl_max_faces:      300000,
+              combined_only:      true,
               excluded_components: [],
             }),
           });
@@ -4932,47 +4909,62 @@ function _stlToggleHollow(checked) {
   document.getElementById('stl-wall-wrap').classList.toggle('disabled', !checked);
 }
 
-function _stlToggleAdvanced() {
-  const wrap  = document.getElementById('stl-adv-wrap');
-  const arrow = document.getElementById('stl-adv-arrow');
-  const open  = wrap.style.display === 'none';
-  wrap.style.display  = open ? 'block' : 'none';
-  arrow.textContent   = open ? '▼' : '▶';
+function _stlSmoothnessInput(val) {
+  const el = document.getElementById('stl-smoothness-val');
+  if (el) el.textContent = val == 0 ? 'AUTO' : val + '%';
 }
 
 function _stlReset() {
-  // Reset to anatomically optimal defaults
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('stl-faces',     200000); txt('stl-faces-val',    '200k');
-  set('stl-sigma',     0.3);    txt('stl-sigma-val',    '0.3');
-  set('stl-taubin',    8);      txt('stl-taubin-val',   '8');
-  set('stl-hc',        8);      txt('stl-hc-val',       '8');
-  set('stl-sulci-str', 0.35);   txt('stl-sulci-str-val','0.35');
-  set('stl-wall',      5);      txt('stl-wall-val',     '5.0 mm');
-  document.getElementById('stl-hollow').checked = false;
+  set('stl-faces',        200000); txt('stl-faces-val',       '200k');
+  set('stl-smoothness',   0);      txt('stl-smoothness-val',  'AUTO');
+  set('stl-sulci-detail', 40);     txt('stl-sulci-val',       '40%');
+  set('stl-wall',         5);      txt('stl-wall-val',        '5.0 mm');
+  document.getElementById('stl-hollow').checked    = false;
+  document.getElementById('stl-flat-base').checked = false;
   _stlToggleHollow(false);
-  // Close advanced panel
-  const wrap = document.getElementById('stl-adv-wrap');
-  if (wrap) wrap.style.display = 'none';
-  const arrow = document.getElementById('stl-adv-arrow');
-  if (arrow) arrow.textContent = '▶';
+}
+
+// Show/hide sulcal detail based on whether GM or cerebellum is selected
+function _stlUpdateSulciVisibility() {
+  const hasGmOrCb = ['gm','cerebellum'].some(k => {
+    const cb = document.getElementById('ol-' + k);
+    return cb && cb.checked;
+  });
+  const wrap = document.getElementById('stl-sulci-wrap');
+  const hint = document.getElementById('stl-sulci-gm-hint');
+  if (wrap) wrap.style.opacity = hasGmOrCb ? '1' : '0.35';
+  if (wrap) wrap.style.pointerEvents = hasGmOrCb ? '' : 'none';
+  if (hint) hint.textContent = hasGmOrCb ? '' : '(select GM or Cerebellum)';
 }
 
 async function _stlExportConfirm() {
   id('stl-modal').classList.remove('on');
+
+  // Map semantic sliders → technical params
+  const smoothness   = parseInt(id('stl-smoothness')?.value  ?? 0);
+  const sulcalDetail = parseInt(id('stl-sulci-detail')?.value ?? 40);
+
+  // smoothness=0 → AUTO (sigma=0/taubin=0 tells server to use tissue defaults)
+  const sigma  = smoothness === 0 ? 0 : parseFloat((0.3 + smoothness / 100 * 1.5).toFixed(2));
+  const taubin = smoothness === 0 ? 0 : Math.round(smoothness / 100 * 24);
+
+  // sulcal detail → unsharp enhance strength + HC smoothing iterations
+  const sulci_enhance = parseFloat((sulcalDetail / 100).toFixed(2));
+  const hc_iter       = Math.round(sulcalDetail / 100 * 20);
+
   export3dFiles({
-    sigma:               parseFloat(id('stl-sigma')?.value     ?? 0.3),
-    taubin:              parseInt(id('stl-taubin')?.value      ?? 8),
+    sigma,
+    taubin,
     max_faces:           parseInt(id('stl-faces').value),
     excluded_components: _p3dExcludedComponents,
     hollow:              id('stl-hollow').checked,
     wall_mm:             parseFloat(id('stl-wall').value),
-    sulci_preserve:      true,
-    sulci_strength:      parseFloat(id('stl-sulci-str')?.value ?? 0.35),
-    hc_iterations:       parseInt(id('stl-hc')?.value         ?? 8),
+    sulci_enhance,
+    hc_iter,
+    flat_base:           id('stl-flat-base')?.checked ?? false,
     combined_only:       id('stl-combined-only')?.checked ?? true,
-
   });
 }
 
@@ -5011,9 +5003,12 @@ async function export3dFiles(stlParams = {}) {
     format:    fmt,
     filename:  _loadedFile?.name || '',
     timestamp: exTs,
-    stl_sigma:           stlParams.sigma              ?? 0.5,
-    stl_taubin:          stlParams.taubin             ?? 10,
+    stl_sigma:           stlParams.sigma              ?? 0,
+    stl_taubin:          stlParams.taubin             ?? 0,
     stl_max_faces:       stlParams.max_faces          ?? 300000,
+    stl_sulci_enhance:   stlParams.sulci_enhance      ?? 0.4,
+    stl_hc_iter:         stlParams.hc_iter            ?? 10,
+    stl_flat_base:       stlParams.flat_base          ?? false,
     excluded_components: stlParams.excluded_components ?? [],
     combined_only:       stlParams.combined_only      ?? true,
     stl_hollow:          stlParams.hollow             ?? false,
@@ -5819,6 +5814,7 @@ function p3dAccept() {
     export3dFiles({ excluded_components: _p3dExcludedComponents });
   } else {
     document.getElementById('stl-modal').classList.add('on');
+    _stlUpdateSulciVisibility();
   }
 }
 

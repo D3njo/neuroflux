@@ -918,9 +918,9 @@ def _build_mesh_response(seg_arr, affine, labels,
     # This is the same principle as the STL export pipeline.
     from trimesh import smoothing as tri_smooth
 
-    # Tissue-specific sigma — matches STL export pipeline
-    # SEG_FULL labels 1-6
-    TISSUE_SIGMA = {1: 0.8, 2: 0.75, 3: 0.8, 4: 0.8, 5: 0.9, 6: 0.8}
+    # Tissue-specific sigma — matches STL export pipeline defaults
+    # GM (2) and cerebellum (6) use lower sigma to preserve sulci/folia
+    TISSUE_SIGMA = {1: 0.8, 2: 0.5, 3: 0.8, 4: 0.7, 5: 0.85, 6: 0.55}
     TISSUE_SIGMA_DEFAULT = 0.8  # fallback for unknown labels
 
     vox2mm = affine[:3, :3]
@@ -1180,27 +1180,32 @@ def export3d():
                 yield f'data: {json.dumps({"status": "error", "error": f"Missing dependency: {e}"})}\n\n'
                 return
 
-            _stl_sigma     = float(body.get("stl_sigma",     0.5))
-            _stl_taubin    = int(body.get("stl_taubin",      10))
-            _stl_max_faces = int(body.get("stl_max_faces",   300_000))
-            _stl_hollow    = bool(body.get("stl_hollow",     False))
-            _stl_wall_mm   = float(body.get("stl_wall_mm",   5.0))
-            _combined_only = bool(body.get("combined_only",  True))
-            _stl_per_tissue = not _combined_only
-            _stl_combined  = bool(body.get("stl_combined",   True))
-            _stl_scale     = max(0.1, min(10.0, float(body.get("stl_scale", 1.0))))
+            _stl_sigma          = float(body.get("stl_sigma",          0.0))
+            _stl_taubin         = int(body.get("stl_taubin",           0))
+            _stl_max_faces      = int(body.get("stl_max_faces",        300_000))
+            _stl_hollow         = bool(body.get("stl_hollow",          False))
+            _stl_wall_mm        = float(body.get("stl_wall_mm",        5.0))
+            _stl_sulci_enhance  = float(body.get("stl_sulci_enhance",  0.4))
+            _stl_hc_iter        = int(body.get("stl_hc_iter",          10))
+            _stl_flat_base      = bool(body.get("stl_flat_base",       False))
+            _combined_only      = bool(body.get("combined_only",       True))
+            _stl_per_tissue     = not _combined_only
+            _stl_combined       = bool(body.get("stl_combined",        True))
+            _stl_scale          = max(0.1, min(10.0, float(body.get("stl_scale", 1.0))))
 
             vox2mm   = affine[:3, :3]
             origin   = affine[:3,  3]
             vox_size = float(np.abs(np.diag(affine[:3, :3])).mean())
 
+            # Tissue-specific defaults — used when user selects AUTO (sigma=0 / taubin=0)
+            # GM and cerebellum use lower sigma + fewer Taubin passes to preserve sulci/folia
             TISSUE_SMOOTH = {
-                1: {"sigma": 0.8,  "taubin": 15, "name": "csf"},
-                2: {"sigma": 0.75, "taubin": 12, "name": "gm"},
-                3: {"sigma": 0.8,  "taubin": 15, "name": "wm"},
-                4: {"sigma": 0.8,  "taubin": 15, "name": "deep_gm"},
-                5: {"sigma": 0.9,  "taubin": 18, "name": "brainstem"},
-                6: {"sigma": 0.8,  "taubin": 15, "name": "cerebellum"},
+                1: {"sigma": 0.8,  "taubin": 12, "name": "csf"},
+                2: {"sigma": 0.5,  "taubin": 6,  "name": "gm"},
+                3: {"sigma": 0.8,  "taubin": 12, "name": "wm"},
+                4: {"sigma": 0.7,  "taubin": 10, "name": "deep_gm"},
+                5: {"sigma": 0.85, "taubin": 14, "name": "brainstem"},
+                6: {"sigma": 0.55, "taubin": 6,  "name": "cerebellum"},
             }
 
             yield _sse(3, "Preparing mesh pipeline…")
@@ -1241,7 +1246,9 @@ def export3d():
 
                 # ── 2. Gaussian blur ─────────────────────────────────────
                 yield 8, f"{name} — gaussian blur…"
-                eff_sigma = max(0.3, tissue_params.get("sigma", _stl_sigma))
+                # _stl_sigma=0 means AUTO: use tissue-specific default
+                raw_sigma = tissue_params.get("sigma", 0.8)
+                eff_sigma = max(0.3, _stl_sigma if _stl_sigma > 0 else raw_sigma)
                 try:
                     vox_s   = np.abs(np.linalg.norm(vox2mm, axis=0))
                     min_vox = float(np.min(vox_s[vox_s > 0])) or 1.0
@@ -1251,6 +1258,19 @@ def export3d():
                 smoothed = gaussian_filter(mask, sigma=sigma_ax)
                 if smoothed.max() < 0.3:
                     return None
+
+                # ── 2.5. Sulcal/folial enhancement (unsharp masking) ──────
+                # Adds back fine anatomical detail that Gaussian smoothing blurs out.
+                # Effective for GM sulci and cerebellum folia.
+                if _stl_sulci_enhance > 0:
+                    coarse_s = ([s * 2.5 for s in sigma_ax]
+                                if isinstance(sigma_ax, list) else sigma_ax * 2.5)
+                    coarse   = gaussian_filter(smoothed, sigma=coarse_s)
+                    smoothed = np.clip(
+                        smoothed + _stl_sulci_enhance * (smoothed - coarse), 0.0, 1.0
+                    )
+                    if smoothed.max() < 0.3:
+                        return None
 
                 # ── 3. Marching cubes ────────────────────────────────────
                 yield 30, f"{name} — marching cubes…"
@@ -1266,19 +1286,50 @@ def export3d():
                     mesh = max(comps, key=lambda m: len(m.faces))
 
                 # ── 4. Taubin smoothing ──────────────────────────────────
-                tau_iter = max(5, min(50, tissue_params.get("taubin", 15)))
-                yield 52, f"{name} — taubin smoothing ({tau_iter} iter)…"
+                # _stl_taubin=0 means AUTO: use tissue-specific default
+                raw_taubin = tissue_params.get("taubin", 12)
+                tau_raw    = _stl_taubin if _stl_taubin > 0 else raw_taubin
+                tau_iter   = 0 if tau_raw == 0 else max(3, min(50, tau_raw))
+                if tau_iter > 0:
+                    yield 52, f"{name} — taubin smoothing ({tau_iter} iter)…"
+                    try:
+                        tri_smooth.filter_taubin(mesh, lamb=0.5, nu=0.53, iterations=tau_iter)
+                    except Exception:
+                        pass
+
+                # ── 4.5. HC smoothing (feature-preserving, sulcal detail) ─
+                # Humphrey C smoothing: tighter than Taubin, preserves concavities
+                # (sulci, fissures, folia) while still reducing jaggedness.
+                if _stl_hc_iter > 0:
+                    yield 60, f"{name} — HC smoothing ({_stl_hc_iter} iter)…"
+                    try:
+                        tri_smooth.filter_humphrey(
+                            mesh, alpha=0.1, beta=0.6, iterations=_stl_hc_iter
+                        )
+                    except Exception:
+                        pass
+
+                # ── 5. Mesh cleanup + watertight repair ──────────────────
+                yield 68, f"{name} — mesh repair…"
                 try:
-                    tri_smooth.filter_taubin(mesh, lamb=0.5, nu=0.53, iterations=tau_iter)
+                    mesh.remove_degenerate_faces()
+                    mesh.remove_duplicate_faces()
+                    _trimesh.repair.fix_normals(mesh)
                 except Exception:
                     pass
-
-                # ── 5. Mesh cleanup + hollow combine ─────────────────────
-                yield 68, f"{name} — mesh cleanup…"
+                # Fill holes up to 3 passes — important for printability
+                for _ in range(3):
+                    if mesh.is_watertight:
+                        break
+                    try:
+                        _trimesh.repair.fill_holes(mesh)
+                    except Exception:
+                        break
                 try:
                     _trimesh.repair.fix_normals(mesh)
                 except Exception:
                     pass
+
                 if _stl_hollow and hollow_inner is not None:
                     try:
                         _trimesh.repair.fix_normals(hollow_inner)
@@ -1300,6 +1351,25 @@ def export3d():
                                                  iterations=min(3, tau_iter))
                     except Exception:
                         pass
+
+                # ── 7. Flat base (print stability) ───────────────────────
+                # Clamp the bottom 5 % of vertices to a flat Z plane so the
+                # model sits flush on the print bed without a pointed bottom.
+                # Uses a simple vertex-clamping approach that avoids shapely.
+                if _stl_flat_base and len(mesh.vertices) > 3:
+                    try:
+                        verts = mesh.vertices.copy()
+                        z_5th = float(np.percentile(verts[:, 2], 5))
+                        verts[verts[:, 2] < z_5th, 2] = z_5th
+                        mesh.vertices = verts
+                        try:
+                            mesh.remove_degenerate_faces()
+                            _trimesh.repair.fix_normals(mesh)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
                 if abs(_stl_scale - 1.0) > 0.01:
                     mesh.vertices *= _stl_scale
 
@@ -1333,10 +1403,11 @@ def export3d():
                     if mask.sum() == 0:
                         continue
 
-                    base = TISSUE_SMOOTH.get(lbl, {"sigma": 0.8, "taubin": 15})
+                    base = TISSUE_SMOOTH.get(lbl, {"sigma": 0.8, "taubin": 12})
                     tp   = {**base,
                             "sigma":  _stl_sigma if _stl_sigma > 0 else base.get("sigma", 0.8),
-                            "taubin": _stl_taubin, "label": lbl, "name": key}
+                            "taubin": _stl_taubin if _stl_taubin > 0 else base.get("taubin", 12),
+                            "label": lbl, "name": key}
 
                     s_pct = 10 + int(i / (n + 1) * 70)
                     e_pct = 10 + int((i + 1) / (n + 1) * 70)
@@ -1367,7 +1438,11 @@ def export3d():
                 i_comb  = len(label_items) if _stl_per_tissue else 0
                 s_pct   = 10 + int(i_comb / n_total * 70)
 
-                combined_params = {"sigma": _stl_sigma, "taubin": _stl_taubin, "name": "combined"}
+                combined_params = {
+                    "sigma":  _stl_sigma  if _stl_sigma  > 0 else 0.6,
+                    "taubin": _stl_taubin if _stl_taubin > 0 else 10,
+                    "name":   "combined",
+                }
                 drv = _drive(combined_mask > 0, combined_params, s_pct, 82)
                 try:
                     while True:
