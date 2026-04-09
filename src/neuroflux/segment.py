@@ -29,6 +29,7 @@ JSON protocol (stdout)
 """
 
 import argparse
+import gc
 import io
 import json
 import os
@@ -786,11 +787,13 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
     fs_arr = np.asarray(img.dataobj, dtype=np.int32)
     affine = img.affine.copy()
     header = img.header.copy()
-    del img; gc.collect()
+    del img
+    gc.collect()
 
     tissue_arr = fs_to_tissue(fs_arr)
     hemi_arr   = fs_to_hemi(fs_arr, tissue_arr)
-    del fs_arr; gc.collect()  # free the largest array ASAP
+    del fs_arr  # free the largest array ASAP
+    gc.collect()
 
     def _save(arr, name):
         path    = os.path.join(output_dir, name)
@@ -804,7 +807,8 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
         _emit("remap", 88, f"  {name:12s}: {vox:>10,} vox")
 
     seg_full_path = _save(tissue_arr, "seg_full.nii.gz")
-    del tissue_arr; gc.collect()
+    del tissue_arr
+    gc.collect()
     _emit("remap", 90, "seg_full.nii.gz saved.")
 
     for lbl, name in HEMI_NAMES.items():
@@ -812,7 +816,8 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
         _emit("hemi", 93, f"  {name:6s}: {vox:>10,} vox")
 
     seg_hemi_path = _save(hemi_arr, "seg_hemi.nii.gz")
-    del hemi_arr; gc.collect()
+    del hemi_arr
+    gc.collect()
     _emit("hemi", 95, "seg_hemi.nii.gz saved.")
 
     original_path = os.path.join(output_dir, "original.nii.gz")
@@ -963,7 +968,7 @@ def run_pipeline(
             if seg_input != input_path:
                 _emit("setup", 7, "Brain FOV detected — pre-cropped to skull region.")
         # Ensure pre-crop arrays are released before TF allocates model memory
-        import gc; gc.collect()
+        gc.collect()
 
         _run_synthseg(
             input_path=seg_input,

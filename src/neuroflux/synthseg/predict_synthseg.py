@@ -15,6 +15,7 @@ License.
 
 
 # python imports
+import gc
 import os
 import sys
 import traceback
@@ -195,7 +196,7 @@ def predict(path_images,
 
                 # Free input tensor before postprocessing to reduce peak RAM
                 del image
-                import gc as _gc; _gc.collect()
+                gc.collect()
 
                 # postprocessing
                 seg, posteriors, volumes = postprocess(post_patch_seg=post_patch_segmentation,
@@ -218,7 +219,8 @@ def predict(path_images,
                 # Free posteriors (probability maps) — structural regions come from
                 # the hard segmentation (seg), not posteriors.  Posteriors are only
                 # used internally for volume calculation and are already computed.
-                del posteriors; _gc.collect()
+                del posteriors
+                gc.collect()
 
                 # write volumes to disc if necessary
                 if path_volumes[i] is not None:
