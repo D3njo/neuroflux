@@ -430,6 +430,13 @@
   .stl-hollow-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; padding:8px 10px; border:1px solid rgba(0,255,240,0.15); border-radius:4px; background:rgba(0,255,240,0.04); }
   .stl-hollow-row label { font-size:9px; color:var(--textdim); letter-spacing:1.5px; text-transform:uppercase; flex:1; cursor:pointer; }
   .stl-hollow-row input[type=checkbox] { accent-color:var(--cyan); width:14px; height:14px; cursor:pointer; }
+  .stl-presets { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:4px; }
+  .stl-preset-card { position:relative; cursor:pointer; }
+  .stl-preset-card input[type=radio] { position:absolute; opacity:0; width:0; height:0; }
+  .stl-preset-card label { display:flex; flex-direction:column; gap:3px; padding:9px 11px; border:1px solid rgba(0,255,240,0.18); border-radius:4px; background:rgba(0,255,240,0.03); cursor:pointer; transition:border-color .15s,background .15s; }
+  .stl-preset-card input:checked + label { border-color:var(--cyan); background:rgba(0,255,240,0.10); }
+  .stl-preset-card label .p-name { font-size:9px; color:var(--cyan); letter-spacing:1.5px; text-transform:uppercase; font-family:var(--font-mono); }
+  .stl-preset-card label .p-desc { font-size:7.5px; color:rgba(255,255,255,0.38); line-height:1.4; text-transform:none; letter-spacing:0; }
   #stl-wall-wrap { transition:opacity .2s; }
   #stl-wall-wrap.disabled { opacity:0.3; pointer-events:none; }
   .stl-btns .btn { flex:1; font-size:9px; }
@@ -1039,35 +1046,50 @@
       </div>
 
 
-      <!-- Semantic quality controls -->
+      <!-- Quality preset -->
       <div style="margin-top:14px;border-top:1px solid rgba(0,255,240,0.08);padding-top:12px;">
+        <div style="font-size:9px;color:var(--textdim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;">QUALITY PRESET</div>
+        <div class="stl-presets">
 
-        <!-- Surface Smoothness -->
-        <div class="stl-param">
-          <div class="stl-param-row">
-            <label>SURFACE SMOOTHNESS</label>
-            <span class="stl-val" id="stl-smoothness-val">AUTO</span>
+          <div class="stl-preset-card">
+            <input type="radio" name="stl-preset" id="stl-pre-standard" value="standard" checked onchange="_stlPresetChanged()">
+            <label for="stl-pre-standard">
+              <span class="p-name">STANDARD</span>
+              <span class="p-desc">Balanced — tissue-optimised defaults, suits all printers</span>
+            </label>
           </div>
-          <input type="range" id="stl-smoothness" min="0" max="100" step="5" value="0"
-                 oninput="_stlSmoothnessInput(this.value)">
-          <span class="stl-hint">AUTO = tissue-optimised &nbsp;·&nbsp; 100 = maximum smoothing</span>
-        </div>
 
-        <!-- Sulcal Detail — only meaningful for GM / cerebellum -->
-        <div class="stl-param" id="stl-sulci-wrap">
-          <div class="stl-param-row">
-            <label>SULCAL DETAIL <span id="stl-sulci-gm-hint" style="color:var(--textdim);font-size:7px;letter-spacing:0;text-transform:none;font-style:italic;"></span></label>
-            <span class="stl-val" id="stl-sulci-val">40%</span>
+          <div class="stl-preset-card">
+            <input type="radio" name="stl-preset" id="stl-pre-detail" value="detail" onchange="_stlPresetChanged()">
+            <label for="stl-pre-detail">
+              <span class="p-name">HIGH DETAIL</span>
+              <span class="p-desc">Maximum sulci &amp; folia — resin / SLA or display models</span>
+            </label>
           </div>
-          <input type="range" id="stl-sulci-detail" min="0" max="100" step="5" value="40"
-                 oninput="document.getElementById('stl-sulci-val').textContent=this.value+'%'">
-          <span class="stl-hint">0 = smooth surface &nbsp;·&nbsp; 100 = maximum sulci / folia detail</span>
+
+          <div class="stl-preset-card">
+            <input type="radio" name="stl-preset" id="stl-pre-print" value="print" onchange="_stlPresetChanged()">
+            <label for="stl-pre-print">
+              <span class="p-name">PRINT READY</span>
+              <span class="p-desc">Slightly smoother — optimised for FDM / PLA (0.4 mm nozzle)</span>
+            </label>
+          </div>
+
+          <div class="stl-preset-card">
+            <input type="radio" name="stl-preset" id="stl-pre-smooth" value="smooth" onchange="_stlPresetChanged()">
+            <label for="stl-pre-smooth">
+              <span class="p-name">SMOOTH</span>
+              <span class="p-desc">Clean dome-like surface — WM, CSF, presentations</span>
+            </label>
+          </div>
+
         </div>
+        <span class="stl-hint" style="display:block;margin-top:2px;" id="stl-preset-hint">tissue-optimised σ &amp; Taubin · sulcal unsharp masking · HC smoothing · watertight repair</span>
 
         <!-- Flat Base -->
-        <div class="stl-hollow-row">
+        <div class="stl-hollow-row" style="margin-top:10px;">
           <input type="checkbox" id="stl-flat-base">
-          <label for="stl-flat-base">FLAT BASE — slice bottom for print bed stability</label>
+          <label for="stl-flat-base">FLAT BASE — clamp bottom for print-bed stability</label>
         </div>
 
       </div>
@@ -4909,60 +4931,65 @@ function _stlToggleHollow(checked) {
   document.getElementById('stl-wall-wrap').classList.toggle('disabled', !checked);
 }
 
-function _stlSmoothnessInput(val) {
-  const el = document.getElementById('stl-smoothness-val');
-  if (el) el.textContent = val == 0 ? 'AUTO' : val + '%';
+// Preset definitions — single source of truth for all quality settings
+const STL_PRESETS = {
+  standard: {
+    sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8,
+    hint: 'tissue-optimised σ & Taubin · sulcal unsharp masking · HC smoothing · watertight repair',
+  },
+  detail: {
+    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 16,
+    hint: 'maximum sulcal / folial detail · strong unsharp masking · deep HC passes · watertight repair',
+  },
+  print: {
+    sigma: 0, taubin: 0, sulci_enhance: 0.15, hc_iter: 4,
+    hint: 'gentle surface polish · mild sulcal detail · optimised for FDM layer resolution · watertight',
+  },
+  smooth: {
+    sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0,
+    hint: 'strong Gaussian blur · heavy Taubin smoothing · ideal for WM / CSF / clean presentations',
+  },
+};
+
+function _stlGetPreset() {
+  const radio = document.querySelector('input[name="stl-preset"]:checked');
+  return STL_PRESETS[radio?.value ?? 'standard'] ?? STL_PRESETS.standard;
+}
+
+function _stlPresetChanged() {
+  const p    = _stlGetPreset();
+  const hint = document.getElementById('stl-preset-hint');
+  if (hint) hint.textContent = p.hint;
 }
 
 function _stlReset() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('stl-faces',        200000); txt('stl-faces-val',       '200k');
-  set('stl-smoothness',   0);      txt('stl-smoothness-val',  'AUTO');
-  set('stl-sulci-detail', 40);     txt('stl-sulci-val',       '40%');
-  set('stl-wall',         5);      txt('stl-wall-val',        '5.0 mm');
+  set('stl-faces', 200000); txt('stl-faces-val', '200k');
+  set('stl-wall',  5);      txt('stl-wall-val',  '5.0 mm');
+  const def = document.getElementById('stl-pre-standard');
+  if (def) def.checked = true;
   document.getElementById('stl-hollow').checked    = false;
   document.getElementById('stl-flat-base').checked = false;
   _stlToggleHollow(false);
+  _stlPresetChanged();
 }
 
-// Show/hide sulcal detail based on whether GM or cerebellum is selected
-function _stlUpdateSulciVisibility() {
-  const hasGmOrCb = ['gm','cerebellum'].some(k => {
-    const cb = document.getElementById('ol-' + k);
-    return cb && cb.checked;
-  });
-  const wrap = document.getElementById('stl-sulci-wrap');
-  const hint = document.getElementById('stl-sulci-gm-hint');
-  if (wrap) wrap.style.opacity = hasGmOrCb ? '1' : '0.35';
-  if (wrap) wrap.style.pointerEvents = hasGmOrCb ? '' : 'none';
-  if (hint) hint.textContent = hasGmOrCb ? '' : '(select GM or Cerebellum)';
-}
+// No-op kept for compatibility (was _stlUpdateSulciVisibility)
+function _stlUpdateSulciVisibility() {}
 
 async function _stlExportConfirm() {
   id('stl-modal').classList.remove('on');
-
-  // Map semantic sliders → technical params
-  const smoothness   = parseInt(id('stl-smoothness')?.value  ?? 0);
-  const sulcalDetail = parseInt(id('stl-sulci-detail')?.value ?? 40);
-
-  // smoothness=0 → AUTO (sigma=0/taubin=0 tells server to use tissue defaults)
-  const sigma  = smoothness === 0 ? 0 : parseFloat((0.3 + smoothness / 100 * 1.5).toFixed(2));
-  const taubin = smoothness === 0 ? 0 : Math.round(smoothness / 100 * 24);
-
-  // sulcal detail → unsharp enhance strength + HC smoothing iterations
-  const sulci_enhance = parseFloat((sulcalDetail / 100).toFixed(2));
-  const hc_iter       = Math.round(sulcalDetail / 100 * 20);
-
+  const p = _stlGetPreset();
   export3dFiles({
-    sigma,
-    taubin,
+    sigma:               p.sigma,
+    taubin:              p.taubin,
     max_faces:           parseInt(id('stl-faces').value),
     excluded_components: _p3dExcludedComponents,
     hollow:              id('stl-hollow').checked,
     wall_mm:             parseFloat(id('stl-wall').value),
-    sulci_enhance,
-    hc_iter,
+    sulci_enhance:       p.sulci_enhance,
+    hc_iter:             p.hc_iter,
     flat_base:           id('stl-flat-base')?.checked ?? false,
     combined_only:       id('stl-combined-only')?.checked ?? true,
   });
