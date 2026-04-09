@@ -329,7 +329,7 @@ src/neuroflux/
 
 - **Python 3.12+:** TF 2.15 has no wheels for Python 3.12 or newer. Use Python 3.10 or 3.11. Support for 3.12+ will come once the Keras 3 migration is complete.
 - **Apple Silicon:** install `pip install "neuroflux[metal]"` for GPU acceleration. Without it, inference runs on CPU (~1 min/scan).
-- **Low RAM (6–8 GB):** Use the **Low Memory** option in the UI (or `--low-memory` on the CLI). This forces fast mode, applies a per-axis brain-shaped crop (AP=192 mm, LR/SI=160 mm), skips posteriors file output, and frees intermediate tensors aggressively — cutting peak RAM by ~50%. QC scoring is kept (only ~48 MB overhead). If the process is still killed by the OS (exit code -9), your system has no swap space. Set up a swapfile:
+- **Low RAM (6–8 GB):** Use the **Low Memory** option in the UI (or `--low-memory` on the CLI). This forces fast mode, disables QC, applies a per-axis brain-shaped crop (AP=192 mm, LR/SI=160 mm), skips posteriors file output, and frees intermediate tensors aggressively — cutting peak RAM by ~50%. If the process is still killed by the OS (exit code -9), your system has no swap space. Set up a swapfile:
 
   <details>
   <summary>▸ Linux / WSL2</summary>

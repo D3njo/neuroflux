@@ -694,10 +694,10 @@ def _run_synthseg(
 
     low_memory mode reduces peak RAM by:
       - forcing fast=True (single forward pass instead of normal+flipped average → ~50% less peak RAM)
+      - disabling QC model (adds significant activation memory + doubles inference time)
       - per-axis brain crop (AP=192mm, LR/SI=160mm) when no swap available
       - skipping posteriors file output (still computed internally for volumes, freed immediately)
       - freeing input tensor before postprocessing
-    QC model is kept (~48 MB overhead).
     These are the only knobs that actually reduce memory on CPU/Intel GPU;
     mixed_float16 has no effect on CPU TensorFlow.
     """
@@ -709,10 +709,10 @@ def _run_synthseg(
     if low_memory:
         # fast=True: skip the flipped-image second pass (halves peak activation RAM)
         fast = True
+        # Skip QC model — adds significant activation memory and ~doubles inference time.
         # Skip posteriors file (the 37-channel probability tensor is ~725 MB; it is
         # still computed internally for volume calculation but freed immediately after).
-        # QC is kept — its model is only ~48 MB and adds minimal activation overhead.
-        do_qc_path    = qc_path
+        do_qc_path    = None
         do_posteriors = None
 
         # Only crop when the system has no swap space.
@@ -722,7 +722,7 @@ def _run_synthseg(
         if swap_available:
             cropping = None
             _emit("synthseg", 8,
-                  f"SynthSeg 2.0 ({mode}, low_memory: fast+no-posteriors, {threads} thread(s))…")
+                  f"SynthSeg 2.0 ({mode}, low_memory: fast+no-QC+no-posteriors, {threads} thread(s))…")
         else:
             # No real swap: use per-axis rectangular crop sized to the brain.
             # AP axis needs ~192mm (brain is ~170mm), LR/SI only ~160mm.
@@ -730,7 +730,7 @@ def _run_synthseg(
             cropping = _smart_crop(input_path)
             tag = "crostini" if _is_crostini() else "no swap"
             _emit("synthseg", 8,
-                  f"SynthSeg 2.0 ({mode}, low_memory: fast+crop{cropping}+no-posteriors [{tag}], {threads} thread(s))…")
+                  f"SynthSeg 2.0 ({mode}, low_memory: fast+crop{cropping}+no-QC+no-posteriors [{tag}], {threads} thread(s))…")
     else:
         cropping      = None
         do_qc_path    = qc_path
