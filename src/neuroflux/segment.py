@@ -222,7 +222,6 @@ def _detect_fov_crop_params(
     orig_shape : list[int]      full voxel dimensions of the scan
     removed_pct: float          fraction of slices removed (0-100)
     """
-    import gc
 
     img        = nib.load(input_path)
     affine     = img.affine.copy()
@@ -311,7 +310,6 @@ def _apply_fov_crop(
     Crop input_path along si_axis [start:end+1] and save to out_path.
     Returns out_path.  Frees the large array immediately after saving.
     """
-    import gc
 
     img     = nib.load(input_path)
     affine  = img.affine.copy()
@@ -475,7 +473,6 @@ def manual_crop_fov_multi(
     Only axes where the user actually trimmed something are applied.
     Returns the same structure as manual_crop_fov.
     """
-    import gc
     import shutil
 
     orig_img   = nib.load(input_path)
@@ -556,7 +553,6 @@ def get_fov_profiles(input_path: str) -> dict:
     Each profile value is the cross-sectional area (number of non-background
     voxels) at that slice index along the corresponding axis.
     """
-    import gc
 
     img         = nib.load(input_path)
     affine      = img.affine
@@ -782,7 +778,6 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
     """
     _emit("remap", 86, "Remapping FreeSurfer labels to NEUROFLUX tissue classes…")
 
-    import gc
     img    = nib.load(fs_seg_path)
     fs_arr = np.asarray(img.dataobj, dtype=np.int32)
     affine = img.affine.copy()
@@ -1007,7 +1002,6 @@ def run_pipeline(
                 pass
         except Exception:
             pass
-        import gc
         # Multiple GC passes — prevent lazy-freed TF objects from lingering
         for _ in range(3):
             gc.collect()
