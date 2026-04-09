@@ -244,6 +244,14 @@ def _detect_fov_crop_params(
     del data
     gc.collect()
 
+    # Determine SI axis from affine (dominant world-space row for SI = row 2)
+    # Falls back to profile-ratio method if affine looks degenerate.
+    dom_map: dict[int, int] = {}
+    for ax in range(3):
+        dom = int(np.abs(affine[:3, ax]).argmax())
+        dom_map[dom] = ax
+    si_axis_aff = dom_map.get(2)  # NIfTI voxel axis whose dominant direction is SI
+
     # Cross-sectional area profiles along each axis
     profiles = []
     for ax in range(3):
@@ -251,7 +259,7 @@ def _detect_fov_crop_params(
         profiles.append(mask.sum(axis=other).astype(float))
 
     ratios  = [p.max() / (p.mean() + 1e-6) for p in profiles]
-    si_axis = int(np.argmax(ratios))
+    si_axis = si_axis_aff if si_axis_aff is not None else int(np.argmax(ratios))
     profile = profiles[si_axis]
     del profiles, ratios
 
@@ -599,6 +607,11 @@ def get_fov_profiles(input_path: str) -> dict:
     }
 
 
+def _is_crostini() -> bool:
+    """Detect if running inside a ChromeOS Crostini (Linux VM) container."""
+    return os.path.exists("/dev/.cros_milestone")
+
+
 def _has_real_swap() -> bool:
     """
     Return True only if the system has real disk-backed swap (file or partition).
@@ -606,12 +619,9 @@ def _has_real_swap() -> bool:
     does not provide additional memory — it compresses existing RAM and cannot
     absorb the large tensors produced by SynthSeg without triggering OOM anyway.
 
-    /proc/swaps columns: Filename  Type  Size  Used  Priority
-    Real swap examples:
-      /swapfile          file       ...
-      /dev/sda2          partition  ...
-    zram example (ChromeOS):
-      /dev/zram0         partition  ...   ← excluded
+    Note: Crostini containers show empty /proc/swaps even though the ChromeOS
+    host has swap.  _is_crostini() is checked separately in _run_synthseg to
+    use an intermediate crop (192mm) instead of the full-size path.
     """
     try:
         with open("/proc/swaps") as f:
@@ -645,6 +655,31 @@ def _has_real_swap() -> bool:
     return True
 
 
+def _smart_crop(input_path: str) -> list:
+    """
+    Compute per-axis crop sizes (mm) tailored to brain anatomy.
+
+    AP axis needs ~192mm (brain ~170mm + margin), LR and SI need only ~160mm.
+    This gives a rectangular crop that covers the full brain while using ~30%
+    less memory than a uniform 192³ cube.
+    """
+    img = nib.load(input_path)
+    affine = img.affine
+    del img
+
+    # Find which voxel axis corresponds to AP (world row 1 = anterior-posterior)
+    dom_map: dict[int, int] = {}
+    for ax in range(3):
+        dom = int(np.abs(affine[:3, ax]).argmax())
+        dom_map[dom] = ax
+
+    ap_axis = dom_map.get(1, 1)  # voxel axis aligned with A-P
+
+    crop = [160, 160, 160]
+    crop[ap_axis] = 192
+    return crop
+
+
 # ── SynthSeg direct call ──────────────────────────────────────────────────────
 
 def _run_synthseg(
@@ -659,8 +694,10 @@ def _run_synthseg(
 
     low_memory mode reduces peak RAM by:
       - forcing fast=True (single forward pass instead of normal+flipped average → ~50% less peak RAM)
-      - cropping input to 192³ (vs. unconstrained padding → ~40% less input tensor RAM)
-      - disabling QC model (saves ~200 MB model weights + activations)
+      - per-axis brain crop (AP=192mm, LR/SI=160mm) when no swap available
+      - skipping posteriors file output (still computed internally for volumes, freed immediately)
+      - freeing input tensor before postprocessing
+    QC model is kept (~48 MB overhead).
     These are the only knobs that actually reduce memory on CPU/Intel GPU;
     mixed_float16 has no effect on CPU TensorFlow.
     """
@@ -672,8 +709,10 @@ def _run_synthseg(
     if low_memory:
         # fast=True: skip the flipped-image second pass (halves peak activation RAM)
         fast = True
-        # skip QC model and posteriors to avoid materializing 95-class posterior tensor (~800 MB)
-        do_qc_path    = None
+        # Skip posteriors file (the 37-channel probability tensor is ~725 MB; it is
+        # still computed internally for volume calculation but freed immediately after).
+        # QC is kept — its model is only ~48 MB and adds minimal activation overhead.
+        do_qc_path    = qc_path
         do_posteriors = None
 
         # Only crop when the system has no swap space.
@@ -683,13 +722,15 @@ def _run_synthseg(
         if swap_available:
             cropping = None
             _emit("synthseg", 8,
-                  f"SynthSeg 2.0 ({mode}, low_memory: fast+no-QC+no-posteriors, {threads} thread(s))…")
+                  f"SynthSeg 2.0 ({mode}, low_memory: fast+no-posteriors, {threads} thread(s))…")
         else:
-            # No swap: crop to 160³ as safety net against OOM-kill.
-            # 160mm covers a typical brain (~170mm); larger brains may be clipped at edges.
-            cropping = 160
+            # No real swap: use per-axis rectangular crop sized to the brain.
+            # AP axis needs ~192mm (brain is ~170mm), LR/SI only ~160mm.
+            # This covers the full brain while using ~30% less RAM than a 192³ cube.
+            cropping = _smart_crop(input_path)
+            tag = "crostini" if _is_crostini() else "no swap"
             _emit("synthseg", 8,
-                  f"SynthSeg 2.0 ({mode}, low_memory: fast+crop160+no-QC+no-posteriors [no swap], {threads} thread(s))…")
+                  f"SynthSeg 2.0 ({mode}, low_memory: fast+crop{cropping}+no-posteriors [{tag}], {threads} thread(s))…")
     else:
         cropping      = None
         do_qc_path    = qc_path
@@ -740,14 +781,16 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
     """
     _emit("remap", 86, "Remapping FreeSurfer labels to NEUROFLUX tissue classes…")
 
+    import gc
     img    = nib.load(fs_seg_path)
     fs_arr = np.asarray(img.dataobj, dtype=np.int32)
+    affine = img.affine.copy()
+    header = img.header.copy()
+    del img; gc.collect()
 
     tissue_arr = fs_to_tissue(fs_arr)
     hemi_arr   = fs_to_hemi(fs_arr, tissue_arr)
-
-    affine = img.affine
-    header = img.header.copy()
+    del fs_arr; gc.collect()  # free the largest array ASAP
 
     def _save(arr, name):
         path    = os.path.join(output_dir, name)
@@ -761,6 +804,7 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
         _emit("remap", 88, f"  {name:12s}: {vox:>10,} vox")
 
     seg_full_path = _save(tissue_arr, "seg_full.nii.gz")
+    del tissue_arr; gc.collect()
     _emit("remap", 90, "seg_full.nii.gz saved.")
 
     for lbl, name in HEMI_NAMES.items():
@@ -768,6 +812,7 @@ def _remap_and_split(fs_seg_path, resampled_path, output_dir, input_path=None):
         _emit("hemi", 93, f"  {name:6s}: {vox:>10,} vox")
 
     seg_hemi_path = _save(hemi_arr, "seg_hemi.nii.gz")
+    del hemi_arr; gc.collect()
     _emit("hemi", 95, "seg_hemi.nii.gz saved.")
 
     original_path = os.path.join(output_dir, "original.nii.gz")
@@ -890,12 +935,13 @@ def run_pipeline(
     if low_memory and not _has_real_swap():
         vox = spacing  # mm per voxel
         size_mm = tuple(round(shape[i] * vox[i], 1) for i in range(3))
-        clipped = [s for s in size_mm if s > 160]
+        crop_vals = _smart_crop(input_path)
+        clipped = any(size_mm[i] > crop_vals[i] for i in range(3))
         if clipped:
             _emit("setup", 5, (
                 f"Warning: scan is {size_mm[0]}×{size_mm[1]}×{size_mm[2]} mm — "
-                f"low_memory crops to 160 mm, edges may be clipped. "
-                f"Add real swap to process the full scan."
+                f"low_memory crops to {crop_vals[0]}×{crop_vals[1]}×{crop_vals[2]} mm, "
+                f"edges may be clipped. Add real swap to process the full scan."
             ))
 
     # ── 2. SynthSeg inference ─────────────────────────────────────────────────
@@ -937,6 +983,29 @@ def run_pipeline(
             raise RuntimeError(
                 "SynthSeg produced no output file — check the error above."
             )
+
+        # ── Free TensorFlow memory before post-processing ────────────────────
+        # TF holds the model weights + activations + graph in RAM; release
+        # everything aggressively so _remap_and_split has enough headroom.
+        try:
+            from neuroflux.synthseg.predict_synthseg import _MODEL_CACHE
+            _MODEL_CACHE.clear()
+        except Exception:
+            pass
+        try:
+            import tensorflow as tf
+            tf.keras.backend.clear_session()
+            # Drop any remaining TF tensor caches
+            try:
+                tf.compat.v1.reset_default_graph()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        import gc
+        # Multiple GC passes — prevent lazy-freed TF objects from lingering
+        for _ in range(3):
+            gc.collect()
 
         # ── 3. Label remap + hemi split ───────────────────────────────────────
         original_path, seg_full_path, seg_hemi_path = _remap_and_split(

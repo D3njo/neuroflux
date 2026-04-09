@@ -31,9 +31,11 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 | **Hemisphere** | 10 | Full lateral split — GM-L/R · WM-L/R · deep GM-L/R · CC · BS · CB |
 | **Structures** | 37 | Individual FreeSurfer structures (raw `seg_fs_labels.nii.gz`) |
 
-**Options:** `--robust` (clinical / low-SNR scans) · `--fast` (~2× speed) · `--ct` (CT Hounsfield mode) · `--threads N` · `--low-memory` (8 GB systems)
+**Options:** `--robust` (clinical / low-SNR scans) · `--fast` (~2× speed) · `--ct` (CT Hounsfield mode) · `--threads N` · `--low-memory` (6–8 GB systems)
 
 **Automatic brain FOV detection** — before inference, NeuroFlux analyses the cross-sectional area profile of the scan along each axis. The skull/brain produces a distinct peak (large area) while neck and vertex have much smaller cross-sections. The pipeline crops to the contiguous region around that peak, ensuring SynthSeg's center crop lands on the brain even for whole-head scans that include neck, face, or large empty FOV. Scans that are already well-centred are passed through unchanged.
+
+**Visual FOV crop** — interactive 3-panel modal (axial / sagittal / coronal) with drag handles for manual per-axis cropping. Viewport-aware overlays account for NiiVue's aspect-ratio rendering. Undo / clear crop reload the original file.
 
 ### Viewer
 - **4-panel MRI viewer** — axial / sagittal / coronal / 3-D render via [NiiVue v0.47](https://github.com/niivue/niivue)
@@ -327,7 +329,7 @@ src/neuroflux/
 
 - **Python 3.12+:** TF 2.15 has no wheels for Python 3.12 or newer. Use Python 3.10 or 3.11. Support for 3.12+ will come once the Keras 3 migration is complete.
 - **Apple Silicon:** install `pip install "neuroflux[metal]"` for GPU acceleration. Without it, inference runs on CPU (~1 min/scan).
-- **Low RAM (≤ 8 GB):** Use the **Low Memory** option in the UI (or `--low-memory` on the CLI). This forces fast mode, reduces the input crop to 128³, and skips the QC model — cutting peak RAM from ~4.5 GB to ~2–3 GB. If the process is still killed by the OS (exit code -9), your system has no swap space. Set up a swapfile:
+- **Low RAM (6–8 GB):** Use the **Low Memory** option in the UI (or `--low-memory` on the CLI). This forces fast mode, applies a per-axis brain-shaped crop (AP=192 mm, LR/SI=160 mm), skips posteriors file output, and frees intermediate tensors aggressively — cutting peak RAM by ~50%. QC scoring is kept (only ~48 MB overhead). If the process is still killed by the OS (exit code -9), your system has no swap space. Set up a swapfile:
 
   <details>
   <summary>▸ Linux / WSL2</summary>

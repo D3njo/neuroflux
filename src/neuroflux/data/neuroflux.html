@@ -1363,10 +1363,10 @@ async function initViewers() {
     logging: false,
   };
   try {
-    nv1 = new NVC({ ...base, sliceType:0 });
-    nv2 = new NVC({ ...base, sliceType:1 });
-    nv3 = new NVC({ ...base, sliceType:2 });
-    nv4 = new NVC({ ...base, sliceType:4 });
+    nv1 = new NVC({ ...base, sliceType:0 });  // axial
+    nv2 = new NVC({ ...base, sliceType:2 });  // sagittal  (NiiVue: 0=axial, 1=coronal, 2=sagittal)
+    nv3 = new NVC({ ...base, sliceType:1 });  // coronal
+    nv4 = new NVC({ ...base, sliceType:4 });  // 3D render
 
     await Promise.resolve(nv1.attachTo('c1'));
     await Promise.resolve(nv2.attachTo('c2'));
@@ -1493,9 +1493,9 @@ function setupCrosshairSync() {
 
   // ── Scroll-slice navigation ────────────────────────────────────────────
   // Mouse wheel on 2D panels steps through slices along the panel's axis:
-  //   Axial (nv1, sliceType:0)    → scroll Z
-  //   Sagittal (nv2, sliceType:1) → scroll X
-  //   Coronal (nv3, sliceType:2)  → scroll Y
+  //   Axial (nv1, sliceType:0)    → scroll Z (SI)
+  //   Sagittal (nv2, sliceType:2) → scroll X (LR)
+  //   Coronal (nv3, sliceType:1)  → scroll Y (AP)
   const sliceViewers = [
     { nv: nv1, axis: 2 },   // axial → Z
     { nv: nv2, axis: 0 },   // sagittal → X
@@ -3511,16 +3511,35 @@ function _olProg(done, total) {
 // ── Elapsed / ETA display ────────────────────────────────────────────────────
 let _segEtaInterval = null;
 let _segEtaPct      = 0;
+let _segEtaHistory  = [];   // [{pct, time}] — last few progress updates
+let _segEtaLastPctTime = 0; // timestamp of last percentage change
 
 function _segEtaRender() {
   const el = id('seg-eta');
   if (!el || !_segJobStart || _segEtaPct <= 2) { if (el) el.textContent = ''; return; }
-  const elapsed = (Date.now() - _segJobStart) / 1000;
-  const fmt = s => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s/60)}m${Math.round(s%60)}s`;
+  const now     = Date.now();
+  const elapsed = (now - _segJobStart) / 1000;
+  const fmt = s => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s/60)}m${Math.round(s%60).toString().padStart(2,'0')}s`;
   if (_segEtaPct >= 100) { el.textContent = `done in ${fmt(elapsed)}`; _segEtaStop(); return; }
-  const total     = elapsed / (_segEtaPct / 100);
-  const remaining = Math.max(0, total - elapsed);
-  el.textContent  = `${fmt(elapsed)} elapsed · ETA ${fmt(remaining)}`;
+
+  // Only show ETA if we have ≥2 distinct progress updates AND the last update
+  // was recent (within 15s).  During long gaps (e.g. SynthSeg inference emits
+  // 8% then nothing until 85%), show only elapsed time — no misleading ETA.
+  const stale = (now - _segEtaLastPctTime) > 15000;
+  if (_segEtaHistory.length >= 2 && !stale) {
+    const first = _segEtaHistory[0];
+    const last  = _segEtaHistory[_segEtaHistory.length - 1];
+    const dpct  = last.pct - first.pct;
+    const dt    = (last.time - first.time) / 1000;
+    if (dpct > 0 && dt > 0) {
+      const rate      = dpct / dt;               // % per second
+      const remaining = (100 - _segEtaPct) / rate;
+      el.textContent  = `${fmt(elapsed)} elapsed · ETA ${fmt(remaining)}`;
+      return;
+    }
+  }
+  // Fallback: just show elapsed, no ETA
+  el.textContent = `${fmt(elapsed)} elapsed`;
 }
 
 function _segEtaStart() {
@@ -3533,8 +3552,19 @@ function _segEtaStop() {
 }
 
 function _segEta(pct) {
+  const now = Date.now();
+  // Only record if percentage actually changed
+  if (pct !== _segEtaPct) {
+    _segEtaHistory.push({pct, time: now});
+    if (_segEtaHistory.length > 6) _segEtaHistory.shift();
+    _segEtaLastPctTime = now;
+  }
   _segEtaPct = pct;
-  if (pct <= 2) { _segEtaStop(); const el = id('seg-eta'); if (el) el.textContent = ''; return; }
+  if (pct <= 2) {
+    _segEtaStop(); _segEtaHistory = []; _segEtaLastPctTime = 0;
+    const el = id('seg-eta'); if (el) el.textContent = '';
+    return;
+  }
   if (!_segEtaInterval) _segEtaStart();
   _segEtaRender();
 }
@@ -3643,7 +3673,7 @@ let _fovNV = [null, null, null];
 let _fovNVReady = [false, false, false];
 
 // NiiVue sliceTypes for panels 0/1/2
-const _FOV_SLICE_TYPES = [0, 1, 2]; // axial=0, sagittal=1, coronal=2
+const _FOV_SLICE_TYPES = [0, 2, 1]; // axial=0, sagittal=2, coronal=1  (NiiVue: 0=axial, 1=coronal, 2=sagittal)
 
 const _AXIS_FULL = ['X (left–right)', 'Y (anterior–posterior)', 'Z (superior–inferior)'];
 
@@ -3658,9 +3688,24 @@ function _hideFovBanner() { const e = id('fov-banner'); if (e) e.style.display =
 
 // ── Banner buttons ────────────────────────────────────────────────────────────
 function fovUndo() {
+  const hadCrop = !!_fovCroppedPath;
   _fovCroppedPath = null; _fovCropInfo = null;
   _pendingInputPath = _fovOrigPath;
   _hideFovBanner(); _fovDrawOverlay(null);
+  // Reload original file so the viewers actually show uncropped data
+  if (hadCrop && _fovOrigPath) {
+    (async () => {
+      try {
+        const fr = await fetch(`${SEG_SERVER}/file?path=${encodeURIComponent(_fovOrigPath)}`);
+        if (!fr.ok) { console.error('fovUndo reload failed:', fr.status); return; }
+        const fb = await fr.arrayBuffer();
+        const fn = _fovOrigPath.split('/').pop().replace(/\.gz$/, '');
+        const fake = { name: fn, arrayBuffer: async () => fb, path: _fovOrigPath, _skipBgFov: true };
+        await load(fake);
+        _fovDrawOverlay(null);
+      } catch(e) { console.error('fovUndo reload error:', e); }
+    })();
+  }
 }
 function fovAdjust() { _fovOpenModal(); }
 
@@ -3682,16 +3727,15 @@ function _fovGetOverlay(nvId, nvObj) {
 }
 function _fovDrawOverlay(cropInfo) {
   // Which main viewer shows which crop axis spatially (not as the slice direction):
-  // nv1=AXIAL: Y(1,h) and X(0,v)
-  // nv2=SAG:   Z(2,h) and Y(1,v)
-  // nv3=COR:   Z(2,h) and X(0,v)
-  // Build spatial map dynamically from current axis assignments
+  // nv1=AXIAL: AP→h, LR→v  |  nv2=SAG: SI→h, AP→v  |  nv3=COR: SI→h, LR→v
   const [_ap, _si, _lr] = _FOV_PANEL_AXIS;
   const _nvSpatial = {
     nv1: {[_ap]:{dir:'h'}, [_lr]:{dir:'v'}},  // AXIAL:    AP→h, LR→v
     nv2: {[_si]:{dir:'h'}, [_ap]:{dir:'v'}},  // SAGITTAL: SI→h, AP→v
     nv3: {[_si]:{dir:'h'}, [_lr]:{dir:'v'}},  // CORONAL:  SI→h, LR→v
   };
+  // sliceTypes for main viewers: nv1=0(axial), nv2=2(sagittal), nv3=1(coronal)
+  const _nvSliceType = { nv1: 0, nv2: 2, nv3: 1 };
   [['nv1',nv1],['nv2',nv2],['nv3',nv3]].forEach(([nid,nv]) => {
     const oc = _fovGetOverlay(nid, nv); if (!oc) return;
     oc.width = nv.canvas.width; oc.height = nv.canvas.height;
@@ -3700,6 +3744,10 @@ function _fovDrawOverlay(cropInfo) {
     const crops = cropInfo.crops ||
       (cropInfo.si_axis != null ? [{si_axis:cropInfo.si_axis, start_vox:cropInfo.crop_start, end_vox:cropInfo.crop_end}] : []);
     const spatial = _nvSpatial[nid]; if (!spatial) return;
+    // Compute viewport for this main viewer's slice type
+    const st = _nvSliceType[nid];
+    const [hAx, vAx] = _fovSliceViewAxes(st);
+    const vp = _fovCalcViewport(hAx, vAx, oc.width, oc.height);
     crops.forEach(crop => {
       const ax  = crop.si_axis; const cfg = spatial[ax]; if (!cfg) return;
       const n   = cropInfo.orig_shape?.[ax] ?? 256;
@@ -3709,7 +3757,9 @@ function _fovDrawOverlay(cropInfo) {
       if (cfg.dir === 'h') {
         const fS = neg ? 1-_fovVoxToFrac(e,n) : _fovVoxToFrac(s,n);
         const fE = neg ? 1-_fovVoxToFrac(s,n) : _fovVoxToFrac(e,n);
-        const yS = oc.height*(1-fS), yE = oc.height*(1-fE);
+        const baseY = vp ? vp.offY    : 0;
+        const spanH = vp ? vp.renderH : oc.height;
+        const yS = baseY + spanH*(1-fS), yE = baseY + spanH*(1-fE);
         ctx.fillStyle='rgba(0,0,0,0.45)';
         ctx.fillRect(0,0,oc.width,yE); ctx.fillRect(0,yS,oc.width,oc.height-yS);
         ctx.strokeStyle='rgba(0,255,240,0.9)'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
@@ -3719,7 +3769,9 @@ function _fovDrawOverlay(cropInfo) {
       } else {
         const fS = neg ? 1-_fovVoxToFrac(e,n) : _fovVoxToFrac(s,n);
         const fE = neg ? 1-_fovVoxToFrac(s,n) : _fovVoxToFrac(e,n);
-        const xS = oc.width*fS, xE = oc.width*fE;
+        const baseX = vp ? vp.offX   : 0;
+        const spanW = vp ? vp.renderW : oc.width;
+        const xS = baseX + spanW*fS, xE = baseX + spanW*fE;
         ctx.fillStyle='rgba(0,0,0,0.45)';
         ctx.fillRect(0,0,xS,oc.height); ctx.fillRect(xE,0,oc.width-xE,oc.height);
         ctx.strokeStyle='rgba(0,255,240,0.9)'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
@@ -3733,16 +3785,12 @@ function _fovDrawOverlay(cropInfo) {
 
 // ── Modal open ────────────────────────────────────────────────────────────────
 async function _fovOpenModal() {
-  // If we have crop info from auto-detect, apply it to the matching panel
-  if (_fovCropInfo?.si_axis != null) {
-    const p = _FOV_PANEL_AXIS.indexOf(_fovCropInfo.si_axis);
-    if (p >= 0) {
-      const maxIdx = (_fovProfiles?.shape?.[_fovCropInfo.si_axis] ?? 256) - 1;
-      _fovPanelStart[p] = _fovCropInfo.crop_start ?? 0;
-      _fovPanelEnd[p]   = _fovCropInfo.crop_end   ?? maxIdx;
-      _fovActivePanel = p;
-    }
-  }
+  // Always start with full range on all panels.  The user clicks AUTO DETECT
+  // to get the system suggestion, or drags crop lines manually.
+  // This prevents stale / wrong crops from previous interactions persisting.
+  _fovPanelStart  = [0, 0, 0];
+  _fovPanelEnd    = [255, 255, 255];
+  _fovActivePanel = 1; // default: SI panel (most common: neck removal)
   _fovSetStatus('');
   _fovHighlightActivePanel();
   _fovUpdateSliders();
@@ -3907,6 +3955,41 @@ function _fovUpdateDispRow() {
 function _fovVoxToFrac(vox, n) { return (vox + 0.5) / n; }
 function _fovFracToVox(frac, n) { return Math.max(0, Math.min(n-1, Math.round(frac * n - 0.5))); }
 
+// Compute the rendered viewport within a canvas.
+// NiiVue maintains aspect ratio, so the slice may not fill the entire canvas.
+// hAx/vAx: voxel axis indices for horizontal/vertical display axes.
+// canW/canH: canvas pixel dimensions.
+// Returns { offX, offY, renderW, renderH } or null if profiles unavailable.
+function _fovCalcViewport(hAx, vAx, canW, canH) {
+  const shape = _fovProfiles?.shape;
+  const mm    = _fovProfiles?.voxel_mm;
+  if (!shape || !mm) return null;
+  const physW = shape[hAx] * (mm[hAx] || 1);
+  const physH = shape[vAx] * (mm[vAx] || 1);
+  const scale   = Math.min(canW / physW, canH / physH);
+  const renderW = physW * scale;
+  const renderH = physH * scale;
+  return { offX: (canW - renderW) / 2, offY: (canH - renderH) / 2, renderW, renderH };
+}
+
+// Display axes [horizontal, vertical] for each NiiVue slice type:
+// AXIAL (0): H=LR, V=AP  |  CORONAL (1): H=LR, V=SI  |  SAGITTAL (2): H=AP, V=SI
+function _fovSliceViewAxes(sliceType) {
+  const [ap, si, lr] = _FOV_PANEL_AXIS;
+  if (sliceType === 0) return [lr, ap]; // axial
+  if (sliceType === 1) return [lr, si]; // coronal
+  return [ap, si];                      // sagittal
+}
+
+// Viewport for FOV modal mini viewer panels
+function _fovViewport(panelIdx) {
+  const sliceType = _FOV_SLICE_TYPES[panelIdx];
+  const [hAx, vAx] = _fovSliceViewAxes(sliceType);
+  const oc = id(`fov-oc-${panelIdx}`);
+  if (!oc) return null;
+  return _fovCalcViewport(hAx, vAx, oc.width || oc.offsetWidth || 220, oc.height || oc.offsetHeight || 180);
+}
+
 function _fovRedrawAllOverlays() {
   for (let p = 0; p < 3; p++) _fovRedrawOverlay(p);
 }
@@ -3935,17 +4018,24 @@ function _fovRedrawOverlay(panelIdx) {
   // If voxel-0 is at the anatomically high end, flip for display
   if (_fovProfiles?.axis_neg?.[ax]) { [fS, fE] = [1 - fE, 1 - fS]; }
 
+  // Account for NiiVue's aspect-ratio rendering within the canvas
+  const vp = _fovViewport(panelIdx);
+
   if (dir === 'h') {
-    const yS = H * (1 - fS);
-    const yE = H * (1 - fE);
+    const baseY = vp ? vp.offY    : 0;
+    const spanH = vp ? vp.renderH : H;
+    const yS = baseY + spanH * (1 - fS);
+    const yE = baseY + spanH * (1 - fE);
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(0, 0,  W, yE);
     ctx.fillRect(0, yS, W, H - yS);
     _fovDrawLine(ctx, 'h', yE, W, H, pE, '#00fff0');
     _fovDrawLine(ctx, 'h', yS, W, H, pS, '#ff44cc');
   } else {
-    const xS = W * fS;
-    const xE = W * fE;
+    const baseX = vp ? vp.offX    : 0;
+    const spanW = vp ? vp.renderW : W;
+    const xS = baseX + spanW * fS;
+    const xE = baseX + spanW * fE;
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(0,   0, xS, H);
     ctx.fillRect(xE,  0, W - xE, H);
@@ -3975,9 +4065,19 @@ function _fovOCMD(e, panelIdx) {
   // Clicking a panel also makes it active
   _fovSetActivePanel(panelIdx);
 
+  // Account for NiiVue's aspect-ratio viewport within the canvas
+  const vp = _fovViewport(panelIdx);
   let frac;
-  if (dir === 'h') frac = 1 - (e.clientY - rect.top)  / rect.height;
-  else             frac =     (e.clientX - rect.left)  / rect.width;
+  if (dir === 'h') {
+    const baseY = vp ? vp.offY    : 0;
+    const spanH = vp ? vp.renderH : rect.height;
+    frac = 1 - (e.clientY - rect.top - baseY) / spanH;
+  } else {
+    const baseX = vp ? vp.offX    : 0;
+    const spanW = vp ? vp.renderW : rect.width;
+    frac = (e.clientX - rect.left - baseX) / spanW;
+  }
+  frac = Math.max(0, Math.min(1, frac));
   if (_fovProfiles?.axis_neg?.[ax]) frac = 1 - frac;  // flip if voxel-0 is at anatomically high end
 
   const vox    = _fovFracToVox(frac, n);
@@ -3995,9 +4095,19 @@ function _fovOCMM(e) {
   const oc  = id(`fov-oc-${panel}`); if (!oc) return;
   const n   = _fovProfiles?.shape?.[axis] ?? 256;
   const rect = oc.getBoundingClientRect();
+  // Account for NiiVue's aspect-ratio viewport within the canvas
+  const vp = _fovViewport(panel);
   let frac;
-  if (dir === 'h') frac = 1 - (e.clientY - rect.top)  / rect.height;
-  else             frac =     (e.clientX - rect.left)  / rect.width;
+  if (dir === 'h') {
+    const baseY = vp ? vp.offY    : 0;
+    const spanH = vp ? vp.renderH : rect.height;
+    frac = 1 - (e.clientY - rect.top - baseY) / spanH;
+  } else {
+    const baseX = vp ? vp.offX    : 0;
+    const spanW = vp ? vp.renderW : rect.width;
+    frac = (e.clientX - rect.left - baseX) / spanW;
+  }
+  frac = Math.max(0, Math.min(1, frac));
   if (_fovProfiles?.axis_neg?.[axis]) frac = 1 - frac;
   const vox = _fovFracToVox(frac, n);
   if (handle === 'start') {
@@ -4063,15 +4173,16 @@ async function _fovAdjApply() {
       _fovCropInfo     = data;
       _pendingInputPath = data.path;
       _showFovBanner(data);
-      _fovDrawOverlay(data);
       if (_fovInterceptResolve) {
-        // Intercept mode — resolve with cropped path BEFORE closing
+        // Intercept mode — original data stays loaded; draw overlay to show crop bounds
+        _fovDrawOverlay(data);
         const r = _fovInterceptResolve; _fovInterceptResolve = null;
         id('fov-modal').style.display = 'none';
         r(data.path);
       } else {
-        // Adjust mode — reload main viewers via the same load() path to avoid
-        // NiiVue misidentifying the file type from the plain /file URL endpoint
+        // Adjust mode — reload main viewers with cropped file.
+        // Do NOT draw overlay before reload — it would shade wrong regions on the
+        // old data, then persist after the cropped data loads.
         _fovSetStatus('Reloading viewer…');
         try {
           const fr = await fetch(`${SEG_SERVER}/file?path=${encodeURIComponent(data.path)}`);
@@ -4081,7 +4192,9 @@ async function _fovAdjApply() {
           const fn  = data.path.split('/').pop().replace(/\.gz$/, '');
           const fake = { name: fn, arrayBuffer: async () => fb, path: data.path, _skipBgFov: true };
           _fovAdjClose();
-          load(fake);
+          await load(fake);
+          // Viewer now shows cropped data — clear any stale overlay from prior crops
+          _fovDrawOverlay(null);
         } catch(e2) { _fovSetStatus('Reload error: ' + e2.message, true); }
       }
     } else {
@@ -4111,6 +4224,12 @@ async function _fovAdjAuto() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
+    // Always reset ALL panels to full range first, then set only the detected axis.
+    for (let p = 0; p < 3; p++) {
+      const ax = _FOV_PANEL_AXIS[p];
+      _fovPanelStart[p] = 0;
+      _fovPanelEnd[p]   = (_fovProfiles?.shape?.[ax] ?? 256) - 1;
+    }
     if (data.cropped) {
       const p = _FOV_PANEL_AXIS.indexOf(data.si_axis);
       if (p >= 0) {
@@ -4135,6 +4254,7 @@ async function _fovAdjAuto() {
 }
 
 function _fovClearCrop() {
+  const hadCrop = !!_fovCroppedPath;
   for (let p = 0; p < 3; p++) {
     const ax = _FOV_PANEL_AXIS[p];
     _fovPanelStart[p] = 0;
@@ -4151,6 +4271,20 @@ function _fovClearCrop() {
     r(_fovOrigPath);
   } else {
     _fovAdjClose();
+    // Reload original file if a crop was previously applied
+    if (hadCrop && _fovOrigPath) {
+      (async () => {
+        try {
+          const fr = await fetch(`${SEG_SERVER}/file?path=${encodeURIComponent(_fovOrigPath)}`);
+          if (!fr.ok) { console.error('clearCrop reload failed:', fr.status); return; }
+          const fb = await fr.arrayBuffer();
+          const fn = _fovOrigPath.split('/').pop().replace(/\.gz$/, '');
+          const fake = { name: fn, arrayBuffer: async () => fb, path: _fovOrigPath, _skipBgFov: true };
+          await load(fake);
+          _fovDrawOverlay(null);
+        } catch(e) { console.error('clearCrop reload error:', e); }
+      })();
+    }
   }
 }
 

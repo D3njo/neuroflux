@@ -193,6 +193,10 @@ def predict(path_images,
                     post_patch_segmentation = net.predict(image)
                     post_patch_parcellation = qc_score = None
 
+                # Free input tensor before postprocessing to reduce peak RAM
+                del image
+                import gc as _gc; _gc.collect()
+
                 # postprocessing
                 seg, posteriors, volumes = postprocess(post_patch_seg=post_patch_segmentation,
                                                        post_patch_parc=post_patch_parcellation,
@@ -211,6 +215,10 @@ def predict(path_images,
                 utils.save_volume(seg, aff, h, path_segmentations[i], dtype='int32')
                 if path_posteriors[i] is not None:
                     utils.save_volume(posteriors, aff, h, path_posteriors[i], dtype='float32')
+                # Free posteriors (probability maps) — structural regions come from
+                # the hard segmentation (seg), not posteriors.  Posteriors are only
+                # used internally for volume calculation and are already computed.
+                del posteriors; _gc.collect()
 
                 # write volumes to disc if necessary
                 if path_volumes[i] is not None:
