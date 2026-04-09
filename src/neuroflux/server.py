@@ -1341,10 +1341,23 @@ def export3d():
                 # ── 6. Decimation ────────────────────────────────────────
                 yield 78, f"{name} — decimation ({len(mesh.faces):,} faces)…"
                 if len(mesh.faces) > _stl_max_faces:
+                    decimated = False
+                    # Primary: quadric error decimation (best quality)
                     try:
                         mesh = mesh.simplify_quadric_decimation(face_count=_stl_max_faces)
+                        decimated = True
                     except Exception:
                         pass
+                    # Fallback: vertex clustering (more robust on complex topology)
+                    if not decimated:
+                        try:
+                            pitch = float(np.max(mesh.extents)) / ((_stl_max_faces / 2) ** 0.5)
+                            mesh = mesh.simplify_vertex_clustering(pitch)
+                            # Clustering can still leave too many faces; hard-cap if so
+                            if len(mesh.faces) > _stl_max_faces * 1.5:
+                                mesh = mesh.simplify_quadric_decimation(face_count=_stl_max_faces)
+                        except Exception:
+                            pass
                 if tau_iter > 0:
                     try:
                         tri_smooth.filter_taubin(mesh, lamb=0.3, nu=0.31,

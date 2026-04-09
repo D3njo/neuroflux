@@ -4377,12 +4377,14 @@ async function runSegmentation() {
   }
 
   // Check if previous segmentation exists
+  // Use effective path (cropped if available) — same stem the pipeline will use
+  const _checkFilename = (_fovCroppedPath || inputPath).split('/').pop();
   try {
     const chk = await fetch(`${SEG_SERVER}/check_seg`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        filename: _loadedFile.name,
+        filename: _checkFilename,
       }),
     });
     if (chk.ok) {
