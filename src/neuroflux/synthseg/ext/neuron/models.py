@@ -23,6 +23,14 @@ from tensorflow.keras.models import Model
 from tensorflow.keras import backend as K
 
 
+def _batch_norm_layer(axis, name):
+    """Create BatchNormalization that stays off the fused 4D-only kernel path."""
+    try:
+        return KL.BatchNormalization(axis=axis, fused=False, name=name)
+    except TypeError:
+        return KL.BatchNormalization(axis=axis, name=name)
+
+
 def unet(nb_features,
          input_shape,
          nb_levels,
@@ -348,7 +356,7 @@ def conv_enc(nb_features,
 
         if batch_norm is not None:
             name = '%s_bn_down_%d' % (prefix, level)
-            last_tensor = KL.BatchNormalization(axis=batch_norm, name=name)(last_tensor)
+            last_tensor = _batch_norm_layer(axis=batch_norm, name=name)(last_tensor)
 
         # max pool if we're not at the last level
         if level < (nb_levels - 1):
@@ -474,7 +482,7 @@ def conv_dec(nb_features,
 
         if batch_norm is not None:
             name = '%s_bn_up_%d' % (prefix, level)
-            last_tensor = KL.BatchNormalization(axis=batch_norm, name=name)(last_tensor)
+            last_tensor = _batch_norm_layer(axis=batch_norm, name=name)(last_tensor)
 
     # Compute likelihood prediction (no activation yet)
     name = '%s_likelihood' % prefix
@@ -656,7 +664,7 @@ def single_ae(enc_size,
 
     if batch_norm is not None:
         name = '%s_ae_mu_bn' % prefix
-        last_tensor = KL.BatchNormalization(axis=batch_norm, name=name)(last_tensor)
+        last_tensor = _batch_norm_layer(axis=batch_norm, name=name)(last_tensor)
 
     # have a simple layer that does nothing to have a clear name before sampling
     name = '%s_ae_mu' % prefix
@@ -703,7 +711,7 @@ def single_ae(enc_size,
 
         if batch_norm is not None:
             name = '%s_ae_sigma_bn' % prefix
-            last_tensor = KL.BatchNormalization(axis=batch_norm, name=name)(last_tensor)
+            last_tensor = _batch_norm_layer(axis=batch_norm, name=name)(last_tensor)
 
         # have a simple layer that does nothing to have a clear name before sampling
         name = '%s_ae_sigma' % prefix
@@ -746,7 +754,7 @@ def single_ae(enc_size,
 
     if batch_norm is not None:
         name = '%s_bn_ae_%s_dec' % (prefix, ae_type)
-        last_tensor = KL.BatchNormalization(axis=batch_norm, name=name)(last_tensor)
+        last_tensor = _batch_norm_layer(axis=batch_norm, name=name)(last_tensor)
 
     # create the model and return
     model = Model(inputs=input_tensor, outputs=[last_tensor], name=model_name)
