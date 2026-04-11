@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import deque
 import io
 import json
 import os
@@ -199,11 +200,14 @@ def _run_job(
         drain_t = threading.Thread(target=_drain_stderr, daemon=True)
         drain_t.start()
 
+        stdout_tail: deque[str] = deque(maxlen=80)
+
         # Stream stdout line by line into the SSE queue
         for raw in iter(proc.stdout.readline, ""):
             line = raw.strip()
             if not line:
                 continue
+            stdout_tail.append(line)
             q.put(line)
             try:
                 msg = json.loads(line)
@@ -222,8 +226,17 @@ def _run_job(
 
         # If process exited with an error but never emitted a JSON error message
         if proc.returncode != 0:
-            stderr_out = "".join(stderr_lines)
-            msg_text = f"Process exited {proc.returncode}. Stderr: {stderr_out}"
+            stderr_out = "".join(stderr_lines).strip()
+            stdout_out = "\n".join(stdout_tail).strip()
+            details = []
+            if stderr_out:
+                details.append(f"stderr:\n{stderr_out}")
+            if stdout_out:
+                details.append(f"stdout tail:\n{stdout_out}")
+            if details:
+                msg_text = f"Process exited {proc.returncode}.\n\n" + "\n\n".join(details)
+            else:
+                msg_text = f"Process exited {proc.returncode} with no stdout/stderr output."
             # Always print to terminal so it's visible regardless of UI state
             print(f"\n[neuroflux] JOB ERROR ({job_id}):\n{msg_text}\n",
                   file=sys.stderr, flush=True)

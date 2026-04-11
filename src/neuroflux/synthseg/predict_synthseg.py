@@ -42,6 +42,22 @@ from .ext.lab2im import edit_volumes
 from .ext.neuron import models as nrn_models
 
 
+def _model_predict(net, inputs):
+    """
+    Run inference eagerly instead of via model.predict().
+
+    On TensorFlow 2.15 + tensorflow-metal, Keras's compiled predict() path can
+    route 5D BatchNormalization tensors through a 4D-only fused kernel and fail
+    on SynthSeg's 3D U-Net. Direct eager calls avoid that code path while still
+    producing the same tensor outputs.
+    """
+    outputs = net(inputs, training=False)
+    if not isinstance(outputs, (list, tuple)):
+        outputs = [outputs]
+    return tuple(output.numpy() if hasattr(output, 'numpy') else np.asarray(output)
+                 for output in outputs)
+
+
 def predict(path_images,
             path_segmentations,
             path_model_segmentation,
@@ -183,15 +199,17 @@ def predict(path_images,
                 # prediction
                 shape_input = utils.add_axis(np.array(image.shape[1:-1]))
                 if do_parcellation & do_qc:
-                    post_patch_segmentation, post_patch_parcellation, qc_score = net.predict([image, shape_input])
+                    post_patch_segmentation, post_patch_parcellation, qc_score = _model_predict(
+                        net, [image, shape_input]
+                    )
                 elif do_parcellation & (not do_qc):
-                    post_patch_segmentation, post_patch_parcellation = net.predict(image)
+                    post_patch_segmentation, post_patch_parcellation = _model_predict(net, image)
                     qc_score = None
                 elif (not do_parcellation) & do_qc:
-                    post_patch_segmentation, qc_score = net.predict([image, shape_input])
+                    post_patch_segmentation, qc_score = _model_predict(net, [image, shape_input])
                     post_patch_parcellation = None
                 else:
-                    post_patch_segmentation = net.predict(image)
+                    post_patch_segmentation, = _model_predict(net, image)
                     post_patch_parcellation = qc_score = None
 
                 # Free input tensor before postprocessing to reduce peak RAM

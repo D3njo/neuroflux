@@ -115,6 +115,13 @@ class TestNoStandaloneKeras:
                     bad.append(f"{fp.relative_to(self.SS)}:{i}: {stripped}")
         assert not bad, "Absolute ext.* imports found:\n" + "\n".join(bad)
 
+    def test_neuron_models_disables_fused_batch_norm(self):
+        text = (self.SS / "ext" / "neuron" / "models.py").read_text(encoding="utf-8")
+        assert "fused=False" in text, (
+            "3D SynthSeg models must disable fused BatchNormalization to avoid "
+            "5D tensor crashes on some TensorFlow/Metal builds"
+        )
+
 
 # ── segment.py hygiene ────────────────────────────────────────────────────────
 
@@ -139,3 +146,18 @@ class TestSegmentModule:
         text = self.SEG.read_text(encoding="utf-8")
         assert "neuroflux.synthseg.predict_synthseg" in text, \
             "segment.py must import predict_synthseg directly"
+
+
+class TestSynthSegPredictRuntimeWorkaround:
+    """Regression checks for the TensorFlow/Metal inference workaround."""
+
+    PREDICT = _PKG_ROOT / "synthseg" / "predict_synthseg.py"
+
+    def test_uses_eager_model_call_not_predict_function(self):
+        text = self.PREDICT.read_text(encoding="utf-8")
+        assert "def _model_predict" in text
+        assert "training=False" in text
+        assert "net.predict(" not in text, (
+            "predict_synthseg must avoid Keras model.predict() on Metal because "
+            "it can crash on 5D BatchNormalization tensors"
+        )
