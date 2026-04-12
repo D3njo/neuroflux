@@ -1201,6 +1201,7 @@ def export3d():
             _stl_sulci_enhance  = float(body.get("stl_sulci_enhance",  0.4))
             _stl_hc_iter        = int(body.get("stl_hc_iter",          10))
             _stl_flat_base      = bool(body.get("stl_flat_base",       False))
+            _stl_upsample       = max(1, min(3, int(body.get("stl_upsample", 1))))
             _combined_only      = bool(body.get("combined_only",       True))
             _stl_per_tissue     = not _combined_only
             _stl_combined       = bool(body.get("stl_combined",        True))
@@ -1257,11 +1258,28 @@ def export3d():
                             except Exception:
                                 hollow_inner = None
 
+                # ── 1.5. Super-resolution upsampling ─────────────────────
+                # Upsample the binary mask to a finer grid before smoothing
+                # so that Marching Cubes has more data points to work with.
+                # This dramatically improves sulcal and folial detail.
+                us_factor = _stl_upsample  # 1 = off, 2 = 0.5 mm, 3 = 0.33 mm
+                if us_factor > 1:
+                    from scipy.ndimage import zoom as nd_zoom
+                    yield 5, f"{name} — upsampling ×{us_factor}…"
+                    # order=1 (bilinear) is intentional: it produces smooth
+                    # gradients at tissue boundaries (0→1 transitions) which
+                    # gives Marching Cubes sub-voxel interpolation — exactly
+                    # the geometric detail improvement we want.
+                    mask = nd_zoom(mask, us_factor, order=1)
+
                 # ── 2. Gaussian blur ─────────────────────────────────────
                 yield 8, f"{name} — gaussian blur…"
                 # _stl_sigma=0 means AUTO: use tissue-specific default
                 raw_sigma = tissue_params.get("sigma", 0.8)
                 eff_sigma = max(0.3, _stl_sigma if _stl_sigma > 0 else raw_sigma)
+                # Scale sigma proportionally to upsampled grid so the physical
+                # blur width (in mm) stays the same regardless of us_factor.
+                eff_sigma *= us_factor
                 try:
                     vox_s   = np.abs(np.linalg.norm(vox2mm, axis=0))
                     min_vox = float(np.min(vox_s[vox_s > 0])) or 1.0
@@ -1292,7 +1310,7 @@ def export3d():
                 except Exception:
                     return None
 
-                verts_mm = (verts @ vox2mm.T) + origin
+                verts_mm = (verts @ (vox2mm / us_factor).T) + origin
                 mesh = _trimesh.Trimesh(vertices=verts_mm, faces=faces_mc, process=True)
                 comps = mesh.split(only_watertight=False)
                 if len(comps) > 1:
