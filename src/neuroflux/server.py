@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections import deque
 import io
 import json
 import os
@@ -64,6 +63,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 
 import nibabel as nib
 import numpy as np
