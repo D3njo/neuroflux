@@ -1068,6 +1068,14 @@
           </div>
 
           <div class="stl-preset-card">
+            <input type="radio" name="stl-preset" id="stl-pre-ultra" value="ultra" onchange="_stlPresetChanged()">
+            <label for="stl-pre-ultra">
+              <span class="p-name">ULTRA DETAIL</span>
+              <span class="p-desc">×2 super-resolution — finest possible geometry (slower, more RAM)</span>
+            </label>
+          </div>
+
+          <div class="stl-preset-card">
             <input type="radio" name="stl-preset" id="stl-pre-print" value="print" onchange="_stlPresetChanged()">
             <label for="stl-pre-print">
               <span class="p-name">PRINT READY</span>
@@ -4894,19 +4902,23 @@ function _stlToggleHollow(checked) {
 // Preset definitions — single source of truth for all quality settings
 const STL_PRESETS = {
   standard: {
-    sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8,
+    sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8, upsample: 1,
     hint: 'tissue-optimised σ & Taubin · sulcal unsharp masking · HC smoothing · watertight repair',
   },
   detail: {
-    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 16,
+    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 16, upsample: 1,
     hint: 'maximum sulcal / folial detail · strong unsharp masking · deep HC passes · watertight repair',
   },
+  ultra: {
+    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 16, upsample: 2,
+    hint: '×2 super-resolution upsampling · maximum sulcal detail · slower but dramatically finer geometry',
+  },
   print: {
-    sigma: 0, taubin: 0, sulci_enhance: 0.15, hc_iter: 4,
+    sigma: 0, taubin: 0, sulci_enhance: 0.15, hc_iter: 4, upsample: 1,
     hint: 'gentle surface polish · mild sulcal detail · optimised for FDM layer resolution · watertight',
   },
   smooth: {
-    sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0,
+    sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0, upsample: 1,
     hint: 'strong Gaussian blur · heavy Taubin smoothing · ideal for WM / CSF / clean presentations',
   },
 };
@@ -4950,6 +4962,7 @@ async function _stlExportConfirm() {
     wall_mm:             parseFloat(id('stl-wall').value),
     sulci_enhance:       p.sulci_enhance,
     hc_iter:             p.hc_iter,
+    upsample:            p.upsample ?? 1,
     flat_base:           id('stl-flat-base')?.checked ?? false,
     combined_only:       id('stl-combined-only')?.checked ?? true,
   });
@@ -4995,6 +5008,7 @@ async function export3dFiles(stlParams = {}) {
     stl_max_faces:       stlParams.max_faces          ?? 300000,
     stl_sulci_enhance:   stlParams.sulci_enhance      ?? 0.4,
     stl_hc_iter:         stlParams.hc_iter            ?? 10,
+    stl_upsample:        stlParams.upsample           ?? 1,
     stl_flat_base:       stlParams.flat_base          ?? false,
     excluded_components: stlParams.excluded_components ?? [],
     combined_only:       stlParams.combined_only      ?? true,
