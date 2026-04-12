@@ -1266,6 +1266,10 @@ def export3d():
                 if us_factor > 1:
                     from scipy.ndimage import zoom as nd_zoom
                     yield 5, f"{name} — upsampling ×{us_factor}…"
+                    # order=1 (bilinear) is intentional: it produces smooth
+                    # gradients at tissue boundaries (0→1 transitions) which
+                    # gives Marching Cubes sub-voxel interpolation — exactly
+                    # the geometric detail improvement we want.
                     mask = nd_zoom(mask, us_factor, order=1)
 
                 # ── 2. Gaussian blur ─────────────────────────────────────
