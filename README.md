@@ -249,14 +249,17 @@ NeuroFlux/
 **Auto-created at runtime (gitignored):**
 
 ```
-src/neuroflux/
-└── segmentation/                # output sessions
-    └── <scan_stem>/
-        ├── original.nii.gz      # 1 mm isotropic T1 resampled by SynthSeg
-        ├── seg_full.nii.gz      # 6-class whole-brain segmentation
-        ├── seg_hemi.nii.gz      # 10-class hemispheric segmentation
-        ├── seg_fs_labels.nii.gz # raw FreeSurfer integer labels
-        └── summary.json         # QC scores + per-structure volumes
+output/                          # project-root output directory
+├── segmentation/                # segmentation sessions
+│   └── <scan_stem>/
+│       ├── original.nii.gz      # 1 mm isotropic T1 resampled by SynthSeg
+│       ├── seg_full.nii.gz      # 6-class whole-brain segmentation
+│       ├── seg_hemi.nii.gz      # 10-class hemispheric segmentation
+│       ├── seg_fs_labels.nii.gz # raw FreeSurfer integer labels
+│       └── summary.json         # QC scores + per-structure volumes
+├── 3d-files/                    # exported STL meshes (per scan stem)
+├── ct_converted/                # DICOM → NIfTI conversion results
+└── screenshots/                 # server-side render screenshots
 ```
 
 ---
