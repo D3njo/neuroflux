@@ -426,6 +426,10 @@
   .stl-param .stl-val { font-size:11px; color:var(--cyan); font-family:var(--font-mono); min-width:28px; text-align:right; }
   .stl-param input[type=range] { width:100%; accent-color:var(--cyan); cursor:pointer; margin-top:2px; }
   .stl-param .stl-hint { font-size:8px; color:rgba(255,255,255,0.25); margin-top:1px; }
+  .stl-num-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+  .stl-num-grid label { display:flex; flex-direction:column; gap:3px; font-size:8px; color:var(--textdim); letter-spacing:1px; }
+  .stl-num-grid input,.stl-select { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-family:var(--font-mono); font-size:9px; padding:4px 5px; border-radius:3px; width:100%; box-sizing:border-box; }
+  .stl-select:focus,.stl-num-grid input:focus { outline:none; border-color:var(--cyan); }
   .stl-btns { display:flex; gap:8px; margin-top:4px; }
   .stl-hollow-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; padding:8px 10px; border:1px solid rgba(0,255,240,0.15); border-radius:4px; background:rgba(0,255,240,0.04); }
   .stl-hollow-row label { font-size:9px; color:var(--textdim); letter-spacing:1.5px; text-transform:uppercase; flex:1; cursor:pointer; }
@@ -1019,12 +1023,21 @@
       <div class="stl-param">
         <div class="stl-param-row">
           <label>MAX FACES (DECIMATION)</label>
-          <span class="stl-val" id="stl-faces-val">200k</span>
+          <span class="stl-val" id="stl-faces-val">800k</span>
         </div>
-        <input type="range" id="stl-faces" min="50000" max="1500000" step="50000" value="200000"
+        <input type="range" id="stl-faces" min="50000" max="1500000" step="50000" value="800000"
                oninput="document.getElementById('stl-faces-val').textContent=Math.round(this.value/1000)+'k'">
-        <span class="stl-hint">200k = recommended for 3D print &nbsp;·&nbsp; 1500k = max detail for digital use</span>
-        <span class="stl-hint">50k = small file &nbsp;·&nbsp; 800k = maximum detail</span>
+        <span class="stl-hint">800k = FDM/detail balance &nbsp;·&nbsp; 1500k = maximum digital detail</span>
+      </div>
+
+      <div class="stl-param">
+        <div class="stl-param-row"><label>PRINT PROFILE</label><span class="stl-val">FDM</span></div>
+        <div class="stl-num-grid">
+          <label>NOZZLE<input type="number" id="stl-nozzle" min="0.1" max="2" step="0.05" value="0.4"></label>
+          <label>LAYER<input type="number" id="stl-layer" min="0.02" max="1" step="0.02" value="0.2"></label>
+          <label>SCALE<input type="number" id="stl-scale" min="0.1" max="10" step="0.1" value="1.0"></label>
+        </div>
+        <span class="stl-hint">Values are in mm; scale is applied to exported STL coordinates.</span>
       </div>
 
       <!-- Hollow -->
@@ -1054,24 +1067,24 @@
           <div class="stl-preset-card">
             <input type="radio" name="stl-preset" id="stl-pre-standard" value="standard" checked onchange="_stlPresetChanged()">
             <label for="stl-pre-standard">
-              <span class="p-name">STANDARD</span>
-              <span class="p-desc">Balanced — tissue-optimised defaults, suits all printers</span>
+              <span class="p-name">ANATOMICAL</span>
+              <span class="p-desc">SDF surface — minimal polish, high anatomical fidelity</span>
             </label>
           </div>
 
           <div class="stl-preset-card">
             <input type="radio" name="stl-preset" id="stl-pre-detail" value="detail" onchange="_stlPresetChanged()">
             <label for="stl-pre-detail">
-              <span class="p-name">HIGH DETAIL</span>
-              <span class="p-desc">Maximum sulci &amp; folia — resin / SLA or display models</span>
+              <span class="p-name">FDM 1:1</span>
+              <span class="p-desc">0.4 mm nozzle — detail compensation without heavy blur</span>
             </label>
           </div>
 
           <div class="stl-preset-card">
             <input type="radio" name="stl-preset" id="stl-pre-ultra" value="ultra" onchange="_stlPresetChanged()">
             <label for="stl-pre-ultra">
-              <span class="p-name">ULTRA DETAIL</span>
-              <span class="p-desc">×2 super-resolution — finest possible geometry (slower, more RAM)</span>
+              <span class="p-name">RESIN / SLA</span>
+              <span class="p-desc">Finer sampling — crisp sulci for display or resin prints</span>
             </label>
           </div>
 
@@ -1092,7 +1105,7 @@
           </div>
 
         </div>
-        <span class="stl-hint" style="display:block;margin-top:2px;" id="stl-preset-hint">tissue-optimised σ &amp; Taubin · sulcal unsharp masking · HC smoothing · watertight repair</span>
+        <span class="stl-hint" style="display:block;margin-top:2px;" id="stl-preset-hint">SDF surface · low profile-based smoothing · high face cap · mesh report</span>
 
         <!-- Flat Base -->
         <div class="stl-hollow-row" style="margin-top:10px;">
@@ -1103,6 +1116,14 @@
       </div>
 
       <!-- Export mode -->
+      <div class="stl-param" style="margin-top:14px;">
+        <div class="stl-param-row"><label>COMBINED STL MODE</label></div>
+        <select class="stl-select" id="stl-combined-mode">
+          <option value="external_shell" selected>External shell — one printable outer surface</option>
+          <option value="multipart">Multipart — preserve each selected tissue surface</option>
+        </select>
+      </div>
+
       <div class="stl-hollow-row" style="margin-top:14px;">
         <input type="checkbox" id="stl-combined-only" checked>
         <label for="stl-combined-only">COMBINED ONLY &nbsp;<span style="color:var(--textdim);font-size:8px;">— uncheck to also save each tissue separately</span></label>
@@ -3049,6 +3070,7 @@ async function ctBoneSave() {
               seg_path:      tmpData.path,
               labels:        { [entry.name]: 1 },
               format:        'stl',
+              label_schema:  'ct',
               filename:      stem,
               timestamp:     ts,
               stl_sigma:          0,
@@ -3056,13 +3078,20 @@ async function ctBoneSave() {
               stl_sulci_enhance:  0.4,
               stl_hc_iter:        10,
               stl_flat_base:      false,
+              stl_surface_mode:   'sdf',
+              stl_combined_mode:  'external_shell',
+              stl_nozzle_mm:      0.4,
+              stl_layer_height_mm:0.2,
               stl_max_faces:      300000,
-              combined_only:      true,
+              stl_combined_only:  true,
               excluded_components: [],
             }),
           });
           if (!stlRes.ok) { const e = await stlRes.json().catch(()=>({})); throw new Error(e.error || `STL HTTP ${stlRes.status}`); }
-          const stlData = await stlRes.json();
+          const stlData = await _readExportSseResponse(stlRes, msg => {
+            if (msg.pct !== undefined) sts.textContent = `Generating STL for ${label}… ${msg.pct}%`;
+            if (msg.msg !== undefined) sts.textContent = msg.msg;
+          });
           if (stlData.saved?.length) {
             saved.push(...stlData.saved.map(p => p.split(/[/\\]/).pop()));
             // Open STL preview (same viewer as brain tissue export)
@@ -4855,10 +4884,12 @@ function onExport3dClick() {
   }
 
   let segPath, allLabels, selectedLabels;
+  let labelSchema = 'full';
 
   if (_segMode === 'hemi' && segPaths.seg_hemi) {
     // Hemispheres mode — use seg_hemi with its 8 labels
     segPath = segPaths.seg_hemi;
+    labelSchema = 'hemi';
     allLabels = { csf:1, gml:2, gmr:3, wml:4, wmr:5, dgml:7, dgmr:8, bs:9, cb:10 };
     selectedLabels = new Set();
     Object.entries(SEG_OVERLAYS_HEMI).forEach(([key, cfg]) => {
@@ -4867,6 +4898,7 @@ function onExport3dClick() {
   } else if (_segMode === 'struct' && segPaths.seg_fs) {
     // Structures mode — use raw FS label volume with selected individual labels
     segPath = segPaths.seg_fs;
+    labelSchema = 'fs';
     allLabels = {};
     selectedLabels = new Set();
     Object.entries(SEG_OVERLAYS_STRUCT).forEach(([key, cfg]) => {
@@ -4889,10 +4921,16 @@ function onExport3dClick() {
     _exportStatus('Select at least one tissue.', true); return;
   }
   if (typeof window.p3dOpen === 'function') {
-    window.p3dOpen(allLabels, selectedLabels, segPath);
+    window.p3dOpen(allLabels, selectedLabels, segPath, labelSchema);
   } else {
     _exportStatus('3D preview not ready — reload the page.', true);
   }
+}
+
+function _activeLabelSchema() {
+  if (_segMode === 'hemi' && segPaths.seg_hemi) return 'hemi';
+  if (_segMode === 'struct' && segPaths.seg_fs) return 'fs';
+  return 'full';
 }
 
 function _stlToggleHollow(checked) {
@@ -4902,24 +4940,29 @@ function _stlToggleHollow(checked) {
 // Preset definitions — single source of truth for all quality settings
 const STL_PRESETS = {
   standard: {
-    sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8, upsample: 1,
-    hint: 'tissue-optimised σ & Taubin · sulcal unsharp masking · HC smoothing · watertight repair',
+    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 12, upsample: 1, max_faces: 900000,
+    surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
+    hint: 'SDF surface · low smoothing · high anatomical fidelity · mesh report',
   },
   detail: {
-    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 16, upsample: 1,
-    hint: 'maximum sulcal / folial detail · strong unsharp masking · deep HC passes · watertight repair',
+    sigma: 0, taubin: 0, sulci_enhance: 0.50, hc_iter: 10, upsample: 1, max_faces: 800000,
+    surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
+    hint: '0.4 mm FDM profile · restrained smoothing · print-aware face cap',
   },
   ultra: {
-    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 16, upsample: 2,
-    hint: '×2 super-resolution upsampling · maximum sulcal detail · slower but dramatically finer geometry',
+    sigma: 0, taubin: 0, sulci_enhance: 0.80, hc_iter: 16, upsample: 2, max_faces: 1500000,
+    surface_mode: 'sdf', combined_mode: 'multipart', nozzle: 0.25, layer: 0.05, scale: 1.0,
+    hint: '×2 SDF sampling · multipart detail · higher memory use',
   },
   print: {
-    sigma: 0, taubin: 0, sulci_enhance: 0.15, hc_iter: 4, upsample: 1,
-    hint: 'gentle surface polish · mild sulcal detail · optimised for FDM layer resolution · watertight',
+    sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8, upsample: 1, max_faces: 700000,
+    surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
+    hint: 'FDM-safe outer shell · reduces fragile ridges without erasing anatomy',
   },
   smooth: {
-    sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0, upsample: 1,
-    hint: 'strong Gaussian blur · heavy Taubin smoothing · ideal for WM / CSF / clean presentations',
+    sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0, upsample: 1, max_faces: 250000,
+    surface_mode: 'volume', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
+    hint: 'legacy volume smoothing · soft surface · smallest files',
   },
 };
 
@@ -4932,12 +4975,17 @@ function _stlPresetChanged() {
   const p    = _stlGetPreset();
   const hint = document.getElementById('stl-preset-hint');
   if (hint) hint.textContent = p.hint;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('stl-faces', p.max_faces); txt('stl-faces-val', Math.round(p.max_faces / 1000) + 'k');
+  set('stl-combined-mode', p.combined_mode);
+  set('stl-nozzle', p.nozzle); set('stl-layer', p.layer); set('stl-scale', p.scale);
 }
 
 function _stlReset() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('stl-faces', 200000); txt('stl-faces-val', '200k');
+  set('stl-faces', 900000); txt('stl-faces-val', '900k');
   set('stl-wall',  5);      txt('stl-wall-val',  '5.0 mm');
   const def = document.getElementById('stl-pre-standard');
   if (def) def.checked = true;
@@ -4963,9 +5011,61 @@ async function _stlExportConfirm() {
     sulci_enhance:       p.sulci_enhance,
     hc_iter:             p.hc_iter,
     upsample:            p.upsample ?? 1,
+    surface_mode:        p.surface_mode,
+    combined_mode:       id('stl-combined-mode')?.value || p.combined_mode,
+    nozzle_mm:           parseFloat(id('stl-nozzle')?.value || p.nozzle),
+    layer_height_mm:     parseFloat(id('stl-layer')?.value || p.layer),
+    scale:               parseFloat(id('stl-scale')?.value || p.scale),
     flat_base:           id('stl-flat-base')?.checked ?? false,
     combined_only:       id('stl-combined-only')?.checked ?? true,
   });
+}
+
+async function _readExportSseResponse(res, onMessage) {
+  if (!res.body) throw new Error('Export stream unavailable');
+  const reader  = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let finalData = null;
+
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    const parts = buf.split('\n\n');
+    buf = parts.pop();
+
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data: ')) continue;
+      let msg;
+      try { msg = JSON.parse(line.slice(6)); } catch { continue; }
+
+      if (onMessage) onMessage(msg);
+      if (msg.status === 'error') throw new Error(msg.error || 'Export error');
+      if (msg.status === 'done') { finalData = msg; break outer; }
+    }
+  }
+
+  if (!finalData) throw new Error('Stream ended without done event');
+  return finalData;
+}
+
+function _stlReportSummary(finalData) {
+  const reports = Object.entries(finalData?.reports || {});
+  if (!reports.length) return '';
+  const selected = reports.find(([path]) => path.endsWith('_combined.stl')) || reports[0];
+  const report = selected[1] || {};
+  const faces = Number.isFinite(report.faces) ? `${Math.round(report.faces / 1000)}k faces` : '';
+  const watertight = report.watertight === true ? 'watertight' : report.watertight === false ? 'open mesh' : '';
+  const components = Number.isFinite(report.components) ? `${report.components} component${report.components !== 1 ? 's' : ''}` : '';
+  const edge = report.edge_mm?.median ? `median edge ${Number(report.edge_mm.median).toFixed(2)} mm` : '';
+  const printer = finalData?.printer || {};
+  const warning = report.edge_mm?.median && printer.nozzle_mm && report.edge_mm.median < printer.nozzle_mm * 0.5
+    ? `below ${printer.nozzle_mm} mm nozzle detail`
+    : '';
+  return [faces, watertight, components, edge, warning].filter(Boolean).join(' · ');
 }
 
 async function export3dFiles(stlParams = {}) {
@@ -4997,10 +5097,12 @@ async function export3dFiles(stlParams = {}) {
   _exportStatus(`Exporting ${Object.keys(labels).length} tissue(s) as ${fmt.toUpperCase()}…`);
 
   const exTs   = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+  const labelSchema = _p3dFrozenLabelSchema || stlParams.label_schema || _activeLabelSchema();
   const reqBody = JSON.stringify({
     seg_path:  _p3dFrozenSegPath || _activeSegPath(),
     labels,
     format:    fmt,
+    label_schema: labelSchema,
     filename:  _loadedFile?.name || '',
     timestamp: exTs,
     stl_sigma:           stlParams.sigma              ?? 0,
@@ -5010,8 +5112,13 @@ async function export3dFiles(stlParams = {}) {
     stl_hc_iter:         stlParams.hc_iter            ?? 10,
     stl_upsample:        stlParams.upsample           ?? 1,
     stl_flat_base:       stlParams.flat_base          ?? false,
+    stl_surface_mode:    stlParams.surface_mode       ?? 'sdf',
+    stl_combined_mode:   stlParams.combined_mode      ?? 'external_shell',
+    stl_nozzle_mm:       stlParams.nozzle_mm          ?? 0.4,
+    stl_layer_height_mm: stlParams.layer_height_mm    ?? 0.2,
+    stl_scale:           stlParams.scale              ?? 1.0,
     excluded_components: stlParams.excluded_components ?? [],
-    combined_only:       stlParams.combined_only      ?? true,
+    stl_combined_only:   stlParams.combined_only      ?? true,
     stl_hollow:          stlParams.hollow             ?? false,
     stl_wall_mm:         stlParams.wall_mm            ?? 5.0,
   });
@@ -5029,38 +5136,16 @@ async function export3dFiles(stlParams = {}) {
 
     // ── STL: read streaming SSE response ──────────────────────────────
     if (fmt === 'stl') {
-      const reader  = res.body.getReader();
-      const decoder = new TextDecoder();
-      let   buf     = '';
-      let   finalData = null;
-
-      outer: while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-
-        // SSE lines end with \n\n; split on every complete event
-        const parts = buf.split('\n\n');
-        buf = parts.pop();          // keep incomplete tail
-
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith('data: ')) continue;
-          let msg;
-          try { msg = JSON.parse(line.slice(6)); } catch { continue; }
-
-          if (msg.pct  !== undefined) _exportProg(msg.pct);
-          if (msg.msg  !== undefined) _exportStatus(msg.msg);
-          if (msg.status === 'error') throw new Error(msg.error || 'Export error');
-          if (msg.status === 'done')  { finalData = msg; break outer; }
-        }
-      }
-
-      if (!finalData) throw new Error('Stream ended without done event');
+      const finalData = await _readExportSseResponse(res, msg => {
+        if (msg.pct !== undefined) _exportProg(msg.pct);
+        if (msg.msg !== undefined) _exportStatus(msg.msg);
+      });
       _p3dFrozenSegPath = null;
+      _p3dFrozenLabelSchema = null;
       _exportProg(100);
       const n = finalData.saved?.length || 0;
-      _exportStatus(`${n} file${n !== 1 ? 's' : ''} saved → 3d-files/`);
+      const summary = _stlReportSummary(finalData);
+      _exportStatus(`${n} file${n !== 1 ? 's' : ''} saved → 3d-files/${summary ? ' · ' + summary : ''}`);
       if (finalData.saved?.length) {
         const combinedPath = finalData.saved.find(p => p.endsWith('_combined.stl'))
                           || finalData.saved[finalData.saved.length - 1];
@@ -5071,6 +5156,7 @@ async function export3dFiles(stlParams = {}) {
     // ── NIfTI: plain JSON response (unchanged) ─────────────────────────
     } else {
       _p3dFrozenSegPath = null;
+      _p3dFrozenLabelSchema = null;
       const data = await res.json();
       const n    = data.saved?.length || 0;
       _exportStatus(`${n} file${n !== 1 ? 's' : ''} saved → 3d-files/`);
@@ -5214,10 +5300,11 @@ const P3D_DOT_COLORS = {
 };
 
 // ── Open preview modal ────────────────────────────────────────────────────
-window.p3dOpen = async function p3dOpen(labels, selectedFullLabels, segPath) {
+window.p3dOpen = async function p3dOpen(labels, selectedFullLabels, segPath, labelSchema) {
   _p3dLabels        = labels;
   _p3dSegPath       = segPath || segPaths.seg_full;
   _p3dFrozenSegPath = segPath || segPaths.seg_full;
+  _p3dFrozenLabelSchema = labelSchema || _activeLabelSchema();
   _p3dSelectedLbls  = selectedFullLabels ? new Set(selectedFullLabels) : null;
   // Freeze only the SELECTED labels for export (not all labels)
   // Build a labels map with only the selected ones
@@ -5364,6 +5451,7 @@ let _p3dPreviewHiddenTissues = new Set();
 let _p3dSegPath      = null;
 let _p3dFrozenLabels    = null;  // labels frozen at p3dAccept time
 let _p3dFrozenSegPath  = null;  // seg path frozen at p3dAccept time
+let _p3dFrozenLabelSchema = null;  // label schema frozen at p3dAccept time
 let _p3dSelectedLbls   = null;  // Set of label numbers selected when preview opened
 
 const P3D_PREVIEW_TISSUE_NAMES = {

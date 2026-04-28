@@ -45,22 +45,28 @@ Under the hood, segmentation is powered by **SynthSeg 2.0** (Billot et al., Harv
 
 ### 3-D Export (STL)
 - Combined or per-tissue STL meshes
-- **Quality presets** — four named presets tuned for different use-cases:
+- **Quality presets** — five named presets tuned for anatomy, FDM printing, resin/SLA, and presentation:
 
   | Preset | Best for | What it does |
   |--------|----------|--------------|
-  | **Standard** | General use | Tissue-optimised σ + Taubin, moderate sulcal enhancement, HC smoothing |
-  | **High Detail** | Resin / SLA, display models | Strong unsharp masking, deep HC passes — maximum sulci & folia |
-  | **Print Ready** | FDM / PLA (0.4 mm nozzle) | Gentle polish, mild sulcal detail, optimised layer resolution |
-  | **Smooth** | WM, CSF, presentations | Heavy Gaussian blur + Taubin — clean dome-like surfaces |
+  | **Anatomical** | Realistic cortical/cerebellar surfaces | Signed-distance-field (SDF) surface extraction, low smoothing, high face cap |
+  | **FDM 1:1** | PLA/PETG on a 0.4 mm nozzle | SDF surface with restrained smoothing and print-aware face count |
+  | **Resin / SLA** | Display models, fine nozzles, digital inspection | 2x SDF sampling, multipart combined STL, highest detail budget |
+  | **Print Safe** | Robust FDM outer shells | Slightly stronger polish while preserving gyri/sulci better than blur-first export |
+  | **Smooth** | WM, CSF, presentations | Legacy volume smoothing for soft, small, clean surfaces |
 
-- **Sulcal/folial enhancement** — unsharp masking in volume space before marching cubes recovers detail blurred by Gaussian pre-smoothing; GM and cerebellum benefit most
+- **SDF surface extraction** — the default STL path marches a signed distance field instead of a blurred binary volume, reducing artificial swelling and preserving sharper gyri/sulci boundaries
+- **Sulcal/folial enhancement** — low-strength unsharp masking on the surface field recovers contrast without the old heavy Gaussian blur; GM and cerebellum benefit most
 - **HC smoothing** (`filter_humphrey`) after Taubin — feature-preserving pass that keeps concavities (sulci, fissures, folia) while reducing surface jaggedness
 - **Watertight repair** — degenerate/duplicate face removal, 3-pass hole fill, normal fix; output is slicer-compatible by default
 - **Flat base** option — clamps bottom 5th-percentile Z vertices flat for print-bed stability
 - Hollow shell with configurable wall thickness
+- External-shell combined STL or multipart combined STL for preserving per-tissue detail
+- Mesh quality reports after export: faces, components, watertight state, extents, and median edge length
 - Up to 1.5 M faces
 - **Inline STL viewer** (Three.js r134, lazy-loaded) opens after every export
+
+> **FDM realism note:** with 1x1x1 mm MRI voxels and a 0.4 mm FDM nozzle at 1:1 scale, NeuroFlux can reduce processing blur but cannot reconstruct anatomy below the source scan or printer resolution. For visibly crisper gyri/sulci, prefer the Anatomical or FDM 1:1 presets, avoid oversized layer heights, and consider resin/SLA or scaled-up prints when very fine sulcal detail matters.
 
 ### Workflow
 - **Session history** — sidebar lists all completed segmentations sorted by date
@@ -150,8 +156,18 @@ neuro_venv\Scripts\activate           # Windows
 # Install NeuroFlux (includes SynthSeg + TensorFlow 2.15)
 uv pip install -e .
 
+# Developer tools for tests and linting
+uv pip install -e ".[dev]"
+
 # Apple Silicon: add Metal GPU plugin
 uv pip install "neuroflux[metal]"        # M1/M2/M3 only
+```
+
+Fast local checks:
+
+```bash
+python -m pytest tests/ -v -m "not slow"
+ruff check src/ tests/
 ```
 
 ---
