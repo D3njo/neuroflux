@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuroflux"
+version = "2.1.0"
+description = "Browser-based MRI segmentation pipeline powered by SynthSeg 2.0 (bundled)"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+keywords = ["mri", "segmentation", "neuroimaging", "synthseg", "brain"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "flask>=2.3,<4",
+    "flask-cors>=4.0",
+    "nibabel>=5.0",
+    "numpy>=1.24,<2.0",
+    "scipy>=1.10",
+    "scikit-image>=0.19",
+    "trimesh>=4.0",
+    "pydicom>=2.4",
+    "dicom2nifti>=2.4",
+    # SynthSeg 2.0 is bundled — TF 2.18 + Keras 3 (Python 3.10–3.12)
+    "tensorflow>=2.18,<2.19",
+    "tqdm>=4.64",
+    "h5py>=3.8",
+    "matplotlib>=3.7",
+    "protobuf>=4.21,<5",
+]
+
+[project.scripts]
+neuroflux-server  = "neuroflux.server:main"
+neuroflux-segment = "neuroflux.segment:main"
+neuroflux-setup   = "neuroflux.setup_synthseg:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"neuroflux.data" = ["*.html", "*.nii", "*.nii.gz"]
+"neuroflux.synthseg.data.labels_classes_priors" = ["*.npy"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.4"]
+# Apple Silicon GPU acceleration (requires TF 2.18 pin — Metal plugin not available on TF >2.18)
+metal = ["tensorflow==2.18.*", "tensorflow-metal==1.2.0"]
+
+[tool.ruff]
+# Exclude vendored third-party code — we don't own it and won't fix its style.
+exclude = [
+    "src/neuroflux/synthseg/ext/",
+    "src/neuroflux/synthseg/predict.py",
+    "src/neuroflux/synthseg/predict_synthseg.py",
+    "src/neuroflux/synthseg/predict_qc.py",
+    "src/neuroflux/synthseg/predict_denoiser.py",
+    "src/neuroflux/synthseg/predict_group.py",
+    "src/neuroflux/synthseg/evaluate.py",
+    "src/neuroflux/synthseg/metrics_model.py",
+    "src/neuroflux/synthseg/labels_to_image_model.py",
+    "src/neuroflux/synthseg/model_inputs.py",
+]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]   # pycodestyle errors/warnings + pyflakes + isort
+ignore = ["E501", "E701"]        # E501: line-length; E701: single-line if (used for alignment)
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+timeout = 30          # default per-test timeout in seconds (fast tests)
+markers = [
+    "slow: tests that require TensorFlow and take significant time (deselect with -m 'not slow')",
+]
