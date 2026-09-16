@@ -415,34 +415,48 @@
   @keyframes spin { to { transform:rotate(360deg); } }
 
   /* STL settings modal */
-  #stl-modal { display:none; position:fixed; inset:0; z-index:500; background:rgba(0,0,0,0.75); align-items:center; justify-content:center; }
+  #stl-modal { display:none; position:fixed; inset:0; z-index:500; background:rgba(0,0,0,0.8); align-items:center; justify-content:center; padding:16px; box-sizing:border-box; overflow-y:auto; }
   #stl-modal.on { display:flex; }
-  #stl-box { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:28px 32px; max-width:340px; width:90%; font-family:var(--font-mono); }
-  #stl-box h3 { font-family:var(--font-head); font-size:13px; letter-spacing:3px; color:var(--cyan); margin:0 0 6px; }
-  #stl-box p  { font-size:9px; color:var(--textdim); line-height:1.6; margin:0 0 18px; }
-  .stl-param { display:flex; flex-direction:column; gap:4px; margin-bottom:14px; }
+  #stl-box { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:20px 22px 16px; max-width:420px; width:92%; max-height:min(88vh, 600px); display:flex; flex-direction:column; box-sizing:border-box; font-family:var(--font-mono); box-shadow:0 16px 50px rgba(0,0,0,0.9), 0 0 20px rgba(0,255,240,0.06); margin:auto; position:relative; }
+  #stl-header { flex-shrink:0; margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid rgba(0,255,240,0.12); }
+  #stl-header h3 { font-family:var(--font-head); font-size:13px; letter-spacing:3px; color:var(--cyan); margin:0 0 4px; }
+  #stl-header p  { font-size:9px; color:var(--textdim); line-height:1.5; margin:0; }
+  #stl-body { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding-right:10px; margin-right:-4px; scrollbar-width:thin; scrollbar-color:var(--cyan) rgba(0,255,240,0.1); }
+  #stl-body::-webkit-scrollbar { width:6px; }
+  #stl-body::-webkit-scrollbar-track { background:rgba(0,0,0,0.35); border:1px solid rgba(0,255,240,0.08); border-radius:3px; }
+  #stl-body::-webkit-scrollbar-thumb { background:var(--cyan); border-radius:3px; box-shadow:0 0 8px rgba(0,255,240,0.5); }
+  #stl-body::-webkit-scrollbar-thumb:hover { background:var(--magenta); box-shadow:0 0 8px rgba(255,0,204,0.5); }
+  body.light #stl-body::-webkit-scrollbar-track { background:rgba(0,0,0,0.08); border-color:rgba(0,100,140,0.15); }
+  body.light #stl-body::-webkit-scrollbar-thumb { background:var(--cyan); }
+  .stl-param { display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }
   .stl-param-row { display:flex; justify-content:space-between; align-items:center; }
   .stl-param label { font-size:9px; color:var(--textdim); letter-spacing:1.5px; text-transform:uppercase; }
-  .stl-param .stl-val { font-size:11px; color:var(--cyan); font-family:var(--font-mono); min-width:28px; text-align:right; }
+  .stl-param .stl-val { font-size:10px; color:var(--cyan); font-family:var(--font-mono); min-width:28px; text-align:right; font-weight:600; }
   .stl-param input[type=range] { width:100%; accent-color:var(--cyan); cursor:pointer; margin-top:2px; }
-  .stl-param .stl-hint { font-size:8px; color:rgba(255,255,255,0.25); margin-top:1px; }
+  .stl-param .stl-hint { font-size:8px; color:rgba(255,255,255,0.3); margin-top:1px; }
   .stl-num-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
   .stl-num-grid label { display:flex; flex-direction:column; gap:3px; font-size:8px; color:var(--textdim); letter-spacing:1px; }
-  .stl-num-grid input,.stl-select { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-family:var(--font-mono); font-size:9px; padding:4px 5px; border-radius:3px; width:100%; box-sizing:border-box; }
-  .stl-select:focus,.stl-num-grid input:focus { outline:none; border-color:var(--cyan); }
-  .stl-btns { display:flex; gap:8px; margin-top:4px; }
-  .stl-hollow-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; padding:8px 10px; border:1px solid rgba(0,255,240,0.15); border-radius:4px; background:rgba(0,255,240,0.04); }
+  .stl-num-grid input { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-family:var(--font-mono); font-size:9px; padding:4px 5px; border-radius:3px; width:100%; box-sizing:border-box; }
+  .stl-select { background-color:var(--bg3); background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%2300fff0' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 10px center; background-size:8px 5px; -webkit-appearance:none; -moz-appearance:none; appearance:none; border:1px solid var(--border); color:var(--cyan); font-family:var(--font-mono); font-size:9.5px; padding:6px 28px 6px 8px; border-radius:3px; width:100%; box-sizing:border-box; cursor:pointer; transition:border-color .15s, box-shadow .15s; }
+  .stl-select:hover { border-color:rgba(0,255,240,0.5); }
+  .stl-select:focus,.stl-num-grid input:focus { outline:none; border-color:var(--cyan); box-shadow:0 0 8px rgba(0,255,240,0.25); }
+  .stl-select option { background:#0d0f12; color:var(--text); padding:5px; }
+  body.light .stl-select { background-color:var(--bg2); background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%2300648c' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E"); }
+  body.light .stl-select option { background:#ffffff; color:#1a202c; }
+  .stl-hollow-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; padding:7px 10px; border:1px solid rgba(0,255,240,0.15); border-radius:4px; background:rgba(0,255,240,0.03); }
   .stl-hollow-row label { font-size:9px; color:var(--textdim); letter-spacing:1.5px; text-transform:uppercase; flex:1; cursor:pointer; }
   .stl-hollow-row input[type=checkbox] { accent-color:var(--cyan); width:14px; height:14px; cursor:pointer; }
-  .stl-presets { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:4px; }
-  .stl-preset-card { position:relative; cursor:pointer; }
-  .stl-preset-card input[type=radio] { position:absolute; opacity:0; width:0; height:0; }
-  .stl-preset-card label { display:flex; flex-direction:column; gap:3px; padding:9px 11px; border:1px solid rgba(0,255,240,0.18); border-radius:4px; background:rgba(0,255,240,0.03); cursor:pointer; transition:border-color .15s,background .15s; }
-  .stl-preset-card input:checked + label { border-color:var(--cyan); background:rgba(0,255,240,0.10); }
-  .stl-preset-card label .p-name { font-size:9px; color:var(--cyan); letter-spacing:1.5px; text-transform:uppercase; font-family:var(--font-mono); }
-  .stl-preset-card label .p-desc { font-size:7.5px; color:rgba(255,255,255,0.38); line-height:1.4; text-transform:none; letter-spacing:0; }
+  .stl-preset-desc-box { margin-top:6px; padding:8px 10px; background:rgba(0,255,240,0.03); border:1px solid rgba(0,255,240,0.15); border-radius:4px; position:relative; overflow:hidden; }
+  .stl-preset-desc-box::before { content:''; position:absolute; top:0; left:0; bottom:0; width:3px; background:linear-gradient(180deg, var(--cyan), var(--magenta)); }
+  .stl-preset-desc-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; padding-left:4px; }
+  .stl-preset-tag { font-size:9px; font-weight:700; color:var(--cyan); letter-spacing:1.5px; text-transform:uppercase; }
+  .stl-preset-tech { font-size:8px; color:var(--magenta); letter-spacing:1px; }
+  .stl-preset-desc-text { font-size:8.5px; color:var(--text); line-height:1.45; margin-bottom:5px; padding-left:4px; }
+  .stl-preset-desc-hint { font-size:7.5px; color:var(--textdim); letter-spacing:0.4px; padding-left:4px; }
+  body.light .stl-preset-desc-box { background:rgba(0,100,140,0.04); border-color:rgba(0,100,140,0.2); }
   #stl-wall-wrap { transition:opacity .2s; }
   #stl-wall-wrap.disabled { opacity:0.3; pointer-events:none; }
+  .stl-btns { display:flex; gap:8px; margin-top:12px; padding-top:10px; border-top:1px solid rgba(0,255,240,0.12); flex-shrink:0; }
   .stl-btns .btn { flex:1; font-size:9px; }
 
   /* Refine modal */
@@ -1016,120 +1030,104 @@
   <!-- STL export settings modal -->
   <div id="stl-modal">
     <div id="stl-box">
-      <h3>STL EXPORT SETTINGS</h3>
-      <p>Anatomically accurate export with sulci &amp; gyri preservation.</p>
-
-      <!-- Max Faces -->
-      <div class="stl-param">
-        <div class="stl-param-row">
-          <label>MAX FACES (DECIMATION)</label>
-          <span class="stl-val" id="stl-faces-val">800k</span>
+      <div id="stl-header">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <h3>STL EXPORT SETTINGS</h3>
+          <span style="font-size:8.5px;color:var(--cyan);opacity:0.75;letter-spacing:1px;">3D PRINT &amp; MESH</span>
         </div>
-        <input type="range" id="stl-faces" min="50000" max="1500000" step="50000" value="800000"
-               oninput="document.getElementById('stl-faces-val').textContent=Math.round(this.value/1000)+'k'">
-        <span class="stl-hint">800k = FDM/detail balance &nbsp;·&nbsp; 1500k = maximum digital detail</span>
+        <p>Anatomically accurate surface extraction with sulci &amp; gyri preservation.</p>
       </div>
 
-      <div class="stl-param">
-        <div class="stl-param-row"><label>PRINT PROFILE</label><span class="stl-val">FDM</span></div>
-        <div class="stl-num-grid">
-          <label>NOZZLE<input type="number" id="stl-nozzle" min="0.1" max="2" step="0.05" value="0.4"></label>
-          <label>LAYER<input type="number" id="stl-layer" min="0.02" max="1" step="0.02" value="0.2"></label>
-          <label>SCALE<input type="number" id="stl-scale" min="0.1" max="10" step="0.1" value="1.0"></label>
+      <div id="stl-body">
+        <!-- Quality preset dropdown with dynamic description card -->
+        <div class="stl-param" style="margin-bottom:12px;">
+          <div class="stl-param-row">
+            <label for="stl-preset">QUALITY PRESET</label>
+            <span class="stl-val" id="stl-preset-tag">ANATOMICAL</span>
+          </div>
+          <select class="stl-select" id="stl-preset" onchange="_stlPresetChanged()">
+            <option value="standard" selected>ANATOMICAL — High Fidelity SDF Surface (Default)</option>
+            <option value="detail">FDM 1:1 PRINT — 0.4 mm Nozzle Detail Profile</option>
+            <option value="ultra">RESIN / SLA — Fine Sub-Voxel Detail &amp; Crisp Sulci</option>
+            <option value="print">PRINT READY — Smoothed Outer Shell (PLA / PETG)</option>
+            <option value="smooth">SMOOTH — Organic Dome Surface (Compact Files)</option>
+          </select>
+          <div class="stl-preset-desc-box">
+            <div class="stl-preset-desc-header">
+              <span style="font-size:8px;color:var(--textdim);letter-spacing:1px;">PROFILE SPECIFICATION</span>
+              <span class="stl-preset-tech" id="stl-preset-tech">SDF · 900k FACES</span>
+            </div>
+            <div class="stl-preset-desc-text" id="stl-preset-desc-text">
+              SDF surface with minimal polish and high anatomical fidelity. Preserves complex sulcal morphology and cortical folds.
+            </div>
+            <div class="stl-preset-desc-hint" id="stl-preset-hint">
+              SDF surface · low smoothing · high anatomical fidelity · mesh report
+            </div>
+          </div>
         </div>
-        <span class="stl-hint">Values are in mm; scale is applied to exported STL coordinates.</span>
-      </div>
 
-      <!-- Hollow -->
-      <div class="stl-hollow-row">
-        <input type="checkbox" id="stl-hollow" onchange="_stlToggleHollow(this.checked)">
-        <label for="stl-hollow">HOLLOW (shell only — faster 3D print)</label>
-      </div>
-
-      <div id="stl-wall-wrap" class="disabled">
+        <!-- Max Faces -->
         <div class="stl-param">
           <div class="stl-param-row">
-            <label>MIN WALL THICKNESS</label>
-            <span class="stl-val" id="stl-wall-val">5.0 mm</span>
+            <label>MAX FACES (DECIMATION)</label>
+            <span class="stl-val" id="stl-faces-val">900k</span>
           </div>
-          <input type="range" id="stl-wall" min="1" max="15" step="0.5" value="5"
-                 oninput="document.getElementById('stl-wall-val').textContent=parseFloat(this.value).toFixed(1)+' mm'">
-          <span class="stl-hint">1 mm = very thin shell &nbsp;·&nbsp; 15 mm = thick shell</span>
+          <input type="range" id="stl-faces" min="50000" max="1500000" step="50000" value="900000"
+                 oninput="document.getElementById('stl-faces-val').textContent=Math.round(this.value/1000)+'k'">
+          <span class="stl-hint">800k = FDM/detail balance &nbsp;·&nbsp; 1500k = maximum digital detail</span>
         </div>
-      </div>
 
-
-      <!-- Quality preset -->
-      <div style="margin-top:14px;border-top:1px solid rgba(0,255,240,0.08);padding-top:12px;">
-        <div style="font-size:9px;color:var(--textdim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;">QUALITY PRESET</div>
-        <div class="stl-presets">
-
-          <div class="stl-preset-card">
-            <input type="radio" name="stl-preset" id="stl-pre-standard" value="standard" checked onchange="_stlPresetChanged()">
-            <label for="stl-pre-standard">
-              <span class="p-name">ANATOMICAL</span>
-              <span class="p-desc">SDF surface — minimal polish, high anatomical fidelity</span>
-            </label>
+        <!-- Print profile parameters -->
+        <div class="stl-param">
+          <div class="stl-param-row"><label>PRINT PROFILE</label><span class="stl-val">FDM / SLA</span></div>
+          <div class="stl-num-grid">
+            <label>NOZZLE<input type="number" id="stl-nozzle" min="0.1" max="2" step="0.05" value="0.4"></label>
+            <label>LAYER<input type="number" id="stl-layer" min="0.02" max="1" step="0.02" value="0.2"></label>
+            <label>SCALE<input type="number" id="stl-scale" min="0.1" max="10" step="0.1" value="1.0"></label>
           </div>
-
-          <div class="stl-preset-card">
-            <input type="radio" name="stl-preset" id="stl-pre-detail" value="detail" onchange="_stlPresetChanged()">
-            <label for="stl-pre-detail">
-              <span class="p-name">FDM 1:1</span>
-              <span class="p-desc">0.4 mm nozzle — detail compensation without heavy blur</span>
-            </label>
-          </div>
-
-          <div class="stl-preset-card">
-            <input type="radio" name="stl-preset" id="stl-pre-ultra" value="ultra" onchange="_stlPresetChanged()">
-            <label for="stl-pre-ultra">
-              <span class="p-name">RESIN / SLA</span>
-              <span class="p-desc">Finer sampling — crisp sulci for display or resin prints</span>
-            </label>
-          </div>
-
-          <div class="stl-preset-card">
-            <input type="radio" name="stl-preset" id="stl-pre-print" value="print" onchange="_stlPresetChanged()">
-            <label for="stl-pre-print">
-              <span class="p-name">PRINT READY</span>
-              <span class="p-desc">Slightly smoother — optimised for FDM / PLA (0.4 mm nozzle)</span>
-            </label>
-          </div>
-
-          <div class="stl-preset-card">
-            <input type="radio" name="stl-preset" id="stl-pre-smooth" value="smooth" onchange="_stlPresetChanged()">
-            <label for="stl-pre-smooth">
-              <span class="p-name">SMOOTH</span>
-              <span class="p-desc">Clean dome-like surface — WM, CSF, presentations</span>
-            </label>
-          </div>
-
+          <span class="stl-hint">Values are in mm; scale is applied to exported STL coordinates.</span>
         </div>
-        <span class="stl-hint" style="display:block;margin-top:2px;" id="stl-preset-hint">SDF surface · low profile-based smoothing · high face cap · mesh report</span>
+
+        <!-- Hollow Shell -->
+        <div class="stl-hollow-row">
+          <input type="checkbox" id="stl-hollow" onchange="_stlToggleHollow(this.checked)">
+          <label for="stl-hollow">HOLLOW (shell only — faster 3D print)</label>
+        </div>
+
+        <div id="stl-wall-wrap" class="disabled">
+          <div class="stl-param">
+            <div class="stl-param-row">
+              <label>MIN WALL THICKNESS</label>
+              <span class="stl-val" id="stl-wall-val">5.0 mm</span>
+            </div>
+            <input type="range" id="stl-wall" min="1" max="15" step="0.5" value="5"
+                   oninput="document.getElementById('stl-wall-val').textContent=parseFloat(this.value).toFixed(1)+' mm'">
+            <span class="stl-hint">1 mm = thin shell &nbsp;·&nbsp; 15 mm = thick shell</span>
+          </div>
+        </div>
 
         <!-- Flat Base -->
-        <div class="stl-hollow-row" style="margin-top:10px;">
+        <div class="stl-hollow-row">
           <input type="checkbox" id="stl-flat-base">
           <label for="stl-flat-base">FLAT BASE — clamp bottom for print-bed stability</label>
         </div>
 
+        <!-- Combined STL Mode -->
+        <div class="stl-param" style="margin-top:10px;">
+          <div class="stl-param-row"><label>COMBINED STL MODE</label></div>
+          <select class="stl-select" id="stl-combined-mode">
+            <option value="external_shell" selected>External shell — one printable outer surface</option>
+            <option value="multipart">Multipart — preserve each selected tissue surface</option>
+          </select>
+        </div>
+
+        <div class="stl-hollow-row">
+          <input type="checkbox" id="stl-combined-only" checked>
+          <label for="stl-combined-only">COMBINED ONLY &nbsp;<span style="color:var(--textdim);font-size:8px;">— uncheck to also save each tissue separately</span></label>
+        </div>
       </div>
 
-      <!-- Export mode -->
-      <div class="stl-param" style="margin-top:14px;">
-        <div class="stl-param-row"><label>COMBINED STL MODE</label></div>
-        <select class="stl-select" id="stl-combined-mode">
-          <option value="external_shell" selected>External shell — one printable outer surface</option>
-          <option value="multipart">Multipart — preserve each selected tissue surface</option>
-        </select>
-      </div>
-
-      <div class="stl-hollow-row" style="margin-top:14px;">
-        <input type="checkbox" id="stl-combined-only" checked>
-        <label for="stl-combined-only">COMBINED ONLY &nbsp;<span style="color:var(--textdim);font-size:8px;">— uncheck to also save each tissue separately</span></label>
-      </div>
-
-      <div class="stl-btns" style="margin-top:8px;">
+      <div class="stl-btns">
         <button class="btn mg" onclick="document.getElementById('stl-modal').classList.remove('on')">✕ CANCEL</button>
         <button class="btn" onclick="_stlReset()">↺ RESET</button>
         <button class="btn" onclick="_stlExportConfirm()">⬡ EXPORT</button>
@@ -5022,41 +5020,59 @@ function _stlToggleHollow(checked) {
 // Preset definitions — single source of truth for all quality settings
 const STL_PRESETS = {
   standard: {
+    name: 'ANATOMICAL',
+    desc: 'SDF surface with minimal polish and high anatomical fidelity. Preserves complex sulcal morphology and cortical folds.',
+    hint: 'SDF surface · low smoothing · high anatomical fidelity · mesh report',
     sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 12, upsample: 1, max_faces: 900000,
     surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
-    hint: 'SDF surface · low smoothing · high anatomical fidelity · mesh report',
   },
   detail: {
+    name: 'FDM 1:1 PRINT',
+    desc: '0.4 mm nozzle profile with detail compensation without heavy blur. Designed for physical extrusion balance.',
+    hint: '0.4 mm FDM profile · restrained smoothing · print-aware face cap',
     sigma: 0, taubin: 0, sulci_enhance: 0.50, hc_iter: 10, upsample: 1, max_faces: 800000,
     surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
-    hint: '0.4 mm FDM profile · restrained smoothing · print-aware face cap',
   },
   ultra: {
+    name: 'RESIN / SLA',
+    desc: '2× SDF sub-voxel oversampling for razor-sharp sulci and gyri. Tailored for resin 3D printing and digital rendering.',
+    hint: '×2 SDF sampling · multipart detail · higher memory use',
     sigma: 0, taubin: 0, sulci_enhance: 0.80, hc_iter: 16, upsample: 2, max_faces: 1500000,
     surface_mode: 'sdf', combined_mode: 'multipart', nozzle: 0.25, layer: 0.05, scale: 1.0,
-    hint: '×2 SDF sampling · multipart detail · higher memory use',
   },
   print: {
+    name: 'PRINT READY',
+    desc: 'Smoothed outer shell for FDM / PLA. Reduces fragile micro-ridges for seamless printing without losing anatomical shape.',
+    hint: 'FDM-safe outer shell · reduces fragile ridges without erasing anatomy',
     sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8, upsample: 1, max_faces: 700000,
     surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
-    hint: 'FDM-safe outer shell · reduces fragile ridges without erasing anatomy',
   },
   smooth: {
+    name: 'SMOOTH',
+    desc: 'Classic volume smoothing with Taubin filtering. Soft contours, minimal facet count, and lightweight file size.',
+    hint: 'legacy volume smoothing · soft surface · smallest files',
     sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0, upsample: 1, max_faces: 250000,
     surface_mode: 'volume', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
-    hint: 'legacy volume smoothing · soft surface · smallest files',
   },
 };
 
 function _stlGetPreset() {
-  const radio = document.querySelector('input[name="stl-preset"]:checked');
-  return STL_PRESETS[radio?.value ?? 'standard'] ?? STL_PRESETS.standard;
+  const sel = document.getElementById('stl-preset');
+  const val = sel ? sel.value : document.querySelector('input[name="stl-preset"]:checked')?.value;
+  return STL_PRESETS[val ?? 'standard'] ?? STL_PRESETS.standard;
 }
 
 function _stlPresetChanged() {
-  const p    = _stlGetPreset();
+  const p = _stlGetPreset();
   const hint = document.getElementById('stl-preset-hint');
   if (hint) hint.textContent = p.hint;
+  const desc = document.getElementById('stl-preset-desc-text');
+  if (desc) desc.textContent = p.desc;
+  const tag = document.getElementById('stl-preset-tag');
+  if (tag) tag.textContent = p.name;
+  const tech = document.getElementById('stl-preset-tech');
+  if (tech) tech.textContent = `${p.surface_mode.toUpperCase()} · ${Math.round(p.max_faces / 1000)}k FACES`;
+
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   set('stl-faces', p.max_faces); txt('stl-faces-val', Math.round(p.max_faces / 1000) + 'k');
@@ -5069,6 +5085,8 @@ function _stlReset() {
   const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   set('stl-faces', 900000); txt('stl-faces-val', '900k');
   set('stl-wall',  5);      txt('stl-wall-val',  '5.0 mm');
+  const sel = document.getElementById('stl-preset');
+  if (sel) sel.value = 'standard';
   const def = document.getElementById('stl-pre-standard');
   if (def) def.checked = true;
   document.getElementById('stl-hollow').checked    = false;
@@ -5987,6 +6005,7 @@ function p3dAccept() {
     export3dFiles({ excluded_components: _p3dExcludedComponents });
   } else {
     document.getElementById('stl-modal').classList.add('on');
+    _stlPresetChanged();
     _stlUpdateSulciVisibility();
   }
 }
