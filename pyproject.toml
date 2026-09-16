@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuroflux"
-version = "2.1.0"
+version = "2.2.0"
 description = "Browser-based MRI segmentation pipeline powered by SynthSeg 2.0 (bundled)"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"

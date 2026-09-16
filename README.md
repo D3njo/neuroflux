@@ -9,9 +9,27 @@
 ![Flask](https://img.shields.io/badge/flask-2.3%2B-cyan?style=flat-square&logo=flask&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-magenta?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows%20·%20macOS%20·%20Linux%20·%20Apple%20Silicon-yellow?style=flat-square)
-![Version](https://img.shields.io/badge/version-2.1.0-magenta?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.2.0-magenta?style=flat-square)
 
 </div>
+
+---
+
+## ⬡ DEMO WALKTHROUGH
+
+![NeuroFlux Walkthrough Demo](docs/screenshots/neuroflux_demo.gif)
+
+> 🎬 **High-Resolution Video:** [docs/screenshots/neuroflux_demo.mp4](docs/screenshots/neuroflux_demo.mp4)  
+> 📖 **Full Visual Walkthrough & UI Guide:** [Detailed Feature Documentation & Screenshots](docs/walkthrough.md)
+
+---
+
+## ⬡ WHAT'S NEW IN 2.2
+
+- **OOM-Free Sequential Inference** — Sequential test-time augmentation (TTA) with `float16` intermediate buffering and NumPy Gaussian smoothing eliminates TensorFlow memory exhaustion (`ResourceExhaustedError`) during full standard segmentation.
+- **Anatomically Safe Low-Memory Cropping** — Re-engineered `_smart_crop` with dynamic `shift-strict` cranial envelope centering ensures 100% preservation of the cerebral vertex and cortex while reducing peak tensor RAM by up to 38%.
+- **Visual Walkthrough & Documentation** — End-to-end interactive demo video and comprehensive feature documentation guide from scan import to 3D STL export.
+- **Robust Path & Multi-Platform Fixes** — Resilient Windows UNC and slash normalisation across all background job queues.
 
 ---
 

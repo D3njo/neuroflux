@@ -717,7 +717,8 @@ class GaussianBlur(Layer):
         # prepare blurring kernel
         self.stride = [1] * (self.n_dims + 2)
         self.sigma = utils.reformat_to_list(self.sigma, length=self.n_dims)
-        self.separable = np.linalg.norm(np.array(self.sigma)) > 5
+        # Always use separable 1D kernels to prevent 3D Conv3D out-of-memory errors
+        self.separable = True
         if self.blur_range is None:  # fixed kernels
             self.kernels = l2i_et.gaussian_kernel(self.sigma, separable=self.separable)
         else:

@@ -534,7 +534,7 @@
 
   <!-- HEADER -->
   <div id="header">
-    <div id="logo">NEURO//FLUX<sup>v2.0</sup></div>
+    <div id="logo">NEURO//FLUX<sup>v2.2</sup></div>
     <div id="header-center">
       <div class="hstat">SYSTEM <b id="h-status">STANDBY</b></div>
       <div class="hstat">VOXELS <b id="h-vox">—</b></div>
@@ -1231,7 +1231,7 @@
 
   <!-- STATUS BAR -->
   <div id="sb">
-    <span>NEURO//FLUX v2.0</span>
+    <span>NEURO//FLUX v2.2</span>
     <span class="sep">|</span>
     <span>COORD <span id="sb-coord">—</span></span>
     <span class="sep">|</span>
@@ -1244,7 +1244,7 @@
   <div id="overlay">
     <div id="oi">
       <div class="ol">NEURO//FLUX</div>
-      <div class="ot">Neural Imaging Interface <span>//</span> v2.0</div>
+      <div class="ot">Neural Imaging Interface <span>//</span> v2.2</div>
 
       <div id="dz"
            ondragover="dzOver(event,'dz')"
@@ -1396,6 +1396,7 @@ async function initViewers() {
     await Promise.resolve(nv2.attachTo('c2'));
     await Promise.resolve(nv3.attachTo('c3'));
     await Promise.resolve(nv4.attachTo('c4'));
+    window.nv1 = nv1; window.nv2 = nv2; window.nv3 = nv3; window.nv4 = nv4;
 
     // Register custom colormaps not built into NiiVue
     // 'violet': black → #CC44FF (cerebellum)
@@ -1673,6 +1674,7 @@ async function load(file) {
     // If a volume is already loaded, clear all four viewers first
     if (loaded) {
       loaded = false;
+      window.loaded = false;
       all(nv => {
         try {
           if (typeof nv.removeAllVolumes === 'function') nv.removeAllVolumes();
@@ -1791,6 +1793,7 @@ async function load(file) {
 
     prog(95, 'FINALIZING…');
     loaded = true;
+    window.loaded = true;
     applyRenderMode();
     fillInfo(file);
     // Mirror sagittal crosshair opts to axial/coronal now that volumes are loaded
@@ -1929,7 +1932,7 @@ async function _fovInterceptThenLoad(file) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf  = await res.arrayBuffer();
       // Server decompresses .nii.gz → raw .nii bytes; strip .gz so NiiVue doesn't re-decompress
-      const fname = chosenPath.split('/').pop().replace(/\.gz$/, '');
+      const fname = chosenPath.split(/[/\\]/).pop().replace(/\.gz$/, '');
       const fake  = { name: fname, arrayBuffer: async () => buf, path: chosenPath, _skipBgFov: true };
       load(fake);
     } catch(e) {
@@ -3762,7 +3765,7 @@ function fovUndo() {
         const fr = await fetch(`${SEG_SERVER}/file?path=${encodeURIComponent(_fovOrigPath)}`);
         if (!fr.ok) { console.error('fovUndo reload failed:', fr.status); return; }
         const fb = await fr.arrayBuffer();
-        const fn = _fovOrigPath.split('/').pop().replace(/\.gz$/, '');
+        const fn = _fovOrigPath.split(/[/\\]/).pop().replace(/\.gz$/, '');
         const fake = { name: fn, arrayBuffer: async () => fb, path: _fovOrigPath, _skipBgFov: true };
         await load(fake);
         _fovDrawOverlay(null);
@@ -3880,7 +3883,7 @@ async function _fovEnsureMiniViewers() {
   } catch(e) { _fovSetStatus('Could not fetch scan: ' + e.message, true); return; }
 
   // /file endpoint decompresses .nii.gz → raw .nii; strip .gz so NiiVue doesn't re-decompress
-  const fname = _fovOrigPath.split('/').pop().replace(/\.gz$/, '');
+  const fname = _fovOrigPath.split(/[/\\]/).pop().replace(/\.gz$/, '');
 
   for (let i = 0; i < 3; i++) {
     // Ensure canvas has pixel dimensions before NiiVue attaches
@@ -3925,6 +3928,8 @@ async function _fovEnsureMiniViewers() {
     }
   }
 
+  window._fovNVReady = _fovNVReady;
+  window._fovNV = _fovNV;
   _fovSetStatus('');
   if (!_fovProfiles) await _fovLoadProfiles();
 }
@@ -4250,7 +4255,7 @@ async function _fovAdjApply() {
           if (!fr.ok) throw new Error(`HTTP ${fr.status}`);
           const fb  = await fr.arrayBuffer();
           // Server decompresses .nii.gz → raw .nii bytes; strip .gz so NiiVue doesn't re-decompress
-          const fn  = data.path.split('/').pop().replace(/\.gz$/, '');
+          const fn  = data.path.split(/[/\\]/).pop().replace(/\.gz$/, '');
           const fake = { name: fn, arrayBuffer: async () => fb, path: data.path, _skipBgFov: true };
           _fovAdjClose();
           await load(fake);
@@ -4300,7 +4305,7 @@ function _fovClearCrop() {
           const fr = await fetch(`${SEG_SERVER}/file?path=${encodeURIComponent(_fovOrigPath)}`);
           if (!fr.ok) { console.error('clearCrop reload failed:', fr.status); return; }
           const fb = await fr.arrayBuffer();
-          const fn = _fovOrigPath.split('/').pop().replace(/\.gz$/, '');
+          const fn = _fovOrigPath.split(/[/\\]/).pop().replace(/\.gz$/, '');
           const fake = { name: fn, arrayBuffer: async () => fb, path: _fovOrigPath, _skipBgFov: true };
           await load(fake);
           _fovDrawOverlay(null);
@@ -4335,6 +4340,7 @@ function _resegLoad() {
     id('btn-mode-hemi').disabled = false;
   }
   _updateSegButtons();
+  if (segPaths.summary) _loadSummary();
   _fetchAndActivateOverlays().then(() => {
     _segProg(100);
     _segStatus('Existing segmentation loaded ✓');
@@ -4443,7 +4449,7 @@ async function runSegmentation() {
 
   // Check if previous segmentation exists
   // Use effective path (cropped if available) — same stem the pipeline will use
-  const _checkFilename = (_fovCroppedPath || inputPath).split('/').pop();
+  const _checkFilename = (_fovCroppedPath || inputPath).split(/[/\\]/).pop();
   try {
     const chk = await fetch(`${SEG_SERVER}/check_seg`, {
       method: 'POST',
@@ -4459,6 +4465,7 @@ async function runSegmentation() {
         _existingOutputs  = data.outputs;
         id('reseg-msg').innerHTML = 'A previous segmentation was found for this file.<br>Load existing results or re-run the segmentation?';
         id('reseg-modal').classList.add('on');
+        id('btn-seg').disabled = false;
         return;
       }
     }
@@ -5466,6 +5473,7 @@ async function _p3dInitNV() {
     isOrientCube:    false,
     crosshairWidth:  0,
   });
+  window._p3dNV = _p3dNV;
 
   await _p3dNV.attachTo('preview3d-nv');
   _p3dNV.setSliceType(4);  // 3D render
@@ -5499,6 +5507,7 @@ async function _p3dInitNV() {
 
   // Load tissue overlays after render is visible (non-blocking)
   _p3dTissueVols = {};
+  window._p3dTissueVols = _p3dTissueVols;
   _p3dLoadTissueOverlays().catch(e => console.warn('tissue overlays:', e));
   _p3dLoadCtBoneOverlays().catch(e => console.warn('ct bone overlays:', e));
 }

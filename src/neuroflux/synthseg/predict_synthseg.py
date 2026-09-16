@@ -23,15 +23,18 @@ from dataclasses import dataclass
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers as KL
 from tensorflow.keras import backend as K
+from tensorflow.keras import layers as KL
 from tensorflow.keras.models import Model
 
 # project imports
 from neuroflux.accel import bucket_pad_shape, get_compiled_predictor, get_policy
 
 from . import evaluate
-from .predict import write_csv, get_flip_indices
+from .ext.lab2im import edit_volumes, layers, utils
+from .ext.neuron import models as nrn_models
+from .keras_compat import set_keras_shape, tensor_static_shape
+from .predict import get_flip_indices, write_csv
 
 # ── Model cache ───────────────────────────────────────────────────────────────
 # Keeps loaded Keras models alive across predict() calls so the server does
@@ -47,13 +50,8 @@ class SynthSegModelBundle:
     seg_net: Model
     qc_net: Model | None = None
     qc_prep: Model | None = None
-
-# third-party imports
-from .ext.lab2im import utils
-from .ext.lab2im import layers
-from .ext.lab2im import edit_volumes
-from .keras_compat import set_keras_shape, tensor_static_shape
-from .ext.neuron import models as nrn_models
+    flip_indices: list | np.ndarray | None = None
+    sigma_smoothing: float = 0.0
 
 
 def _run_inference(bundle, image, shape_input, do_parcellation, do_qc, bucket_shape):
@@ -73,6 +71,39 @@ def _run_inference(bundle, image, shape_input, do_parcellation, do_qc, bucket_sh
         else:
             post_patch_segmentation = seg_out
         post_patch_parcellation = None
+
+    # Sequential test-time augmentation (flipped inference) to halve peak RAM and avoid OOM
+    if bundle.flip_indices is not None:
+        import gc
+        out1 = np.asarray(post_patch_segmentation, dtype=np.float16)
+        del post_patch_segmentation
+        gc.collect()
+
+        image_flipped = np.flip(image, axis=1)  # axis 1 is spatial axis 0
+        out2 = seg_predict(image_flipped)
+        if isinstance(out2, tuple):
+            out2 = out2[0]
+        del image_flipped
+        gc.collect()
+
+        out2 = np.flip(out2, axis=1)
+        out2 = out2[..., bundle.flip_indices]
+        out2 = np.asarray(out2, dtype=np.float16)
+        gc.collect()
+
+        post_patch_segmentation = 0.5 * (out1.astype(np.float32) + out2.astype(np.float32))
+        del out1, out2
+        gc.collect()
+
+    # Gaussian smoothing of posteriors in NumPy (avoids 33-channel Conv3D OOM)
+    if bundle.sigma_smoothing > 0:
+        import scipy.ndimage as ndi
+        if not isinstance(post_patch_segmentation, np.ndarray):
+            post_patch_segmentation = np.asarray(post_patch_segmentation)
+        for c in range(post_patch_segmentation.shape[-1]):
+            post_patch_segmentation[..., c] = ndi.gaussian_filter(
+                post_patch_segmentation[..., c], sigma=bundle.sigma_smoothing
+            )
 
     qc_score = None
     if do_qc and bundle.qc_net is not None and bundle.qc_prep is not None:
@@ -549,7 +580,12 @@ def preprocess(path_image, ct, target_res=1., n_levels=5, crop=None, min_pad=Non
     if crop is not None:
         crop = utils.reformat_to_list(crop, length=n_dims, dtype='int')
         crop_shape = [utils.find_closest_number_divisible_by_m(s, 2 ** n_levels, 'higher') for s in crop]
-        im, crop_idx = edit_volumes.crop_volume(im, cropping_shape=crop_shape, return_crop_idx=True)
+        try:
+            im, crop_idx = edit_volumes.crop_volume_around_region(
+                im, threshold=10, cropping_shape=crop_shape, overflow='shift-strict'
+            )
+        except Exception:
+            im, crop_idx = edit_volumes.crop_volume(im, cropping_shape=crop_shape, return_crop_idx=True)
     else:
         crop_idx = None
 
@@ -674,31 +710,8 @@ def build_model(path_model_segmentation,
         net.load_weights(path_model_segmentation, by_name=True)
         input_image = net.inputs[0]
         name_segm_prediction_layer = 'unet_prediction'
-
-        # smooth posteriors if specified
-        if sigma_smoothing > 0:
-            last_tensor = net.output
-            set_keras_shape(last_tensor, tensor_static_shape(last_tensor))
-            last_tensor = layers.GaussianBlur(sigma=sigma_smoothing)(last_tensor)
-            net = Model(inputs=net.inputs, outputs=last_tensor)
-
-        if flip_indices is not None:
-
-            # segment flipped image
-            seg = net.output
-            image_flipped = layers.RandomFlip(axis=0, prob=1)(input_image)
-            last_tensor = net(image_flipped)
-
-            # flip back and re-order channels
-            last_tensor = layers.RandomFlip(axis=0, prob=1)(last_tensor)
-            last_tensor = KL.Lambda(lambda x: tf.split(x, [1] * n_labels_seg, axis=-1), name='split')(last_tensor)
-            reordered_channels = [last_tensor[flip_indices[i]] for i in range(n_labels_seg)]
-            last_tensor = KL.Lambda(lambda x: tf.concat(x, -1), name='concat')(reordered_channels)
-
-            # average two segmentations and build model
-            name_segm_prediction_layer = 'average_lr'
-            last_tensor = KL.Lambda(lambda x: 0.5 * (x[0] + x[1]), name=name_segm_prediction_layer)([seg, last_tensor])
-            net = Model(inputs=net.inputs, outputs=last_tensor)
+        # Note: Gaussian smoothing and flipped inference (TTA) are executed sequentially
+        # in _run_inference to halve peak activation RAM and prevent OOM on CPU/GPU.
 
     # add aparc segmenter if needed
     if do_parcellation:
@@ -752,7 +765,13 @@ def build_model(path_model_segmentation,
             n_labels_qc=n_labels_qc,
         )
 
-    return SynthSegModelBundle(seg_net=net, qc_net=qc_net, qc_prep=qc_prep)
+    return SynthSegModelBundle(
+        seg_net=net,
+        qc_net=qc_net,
+        qc_prep=qc_prep,
+        flip_indices=flip_indices,
+        sigma_smoothing=sigma_smoothing,
+    )
 
 
 def build_qc_prep_model(n_labels_seg, labels_segmentation, labels_qc, input_shape_qc, n_labels_qc):

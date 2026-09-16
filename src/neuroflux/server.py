@@ -1,5 +1,5 @@
 """
-NEURO//FLUX — Segmentation Bridge Server  v2.0  (SynthSeg 2.0)
+NEURO//FLUX — Segmentation Bridge Server  v2.2  (SynthSeg 2.0)
 ===============================================================
 Starts a local Flask server on  http://localhost:5050
 
@@ -480,11 +480,14 @@ def upload():
     return jsonify({"path": save_path})
 
 def _stem(input_path: str) -> str:
-    """Return filename without .nii or .nii.gz extension."""
+    """Return filename without .nii or .nii.gz extension, stripping UUID upload prefixes."""
     name = os.path.basename(input_path)
     for ext in (".nii.gz", ".nii"):
         if name.endswith(ext):
-            return name[:-len(ext)]
+            name = name[:-len(ext)]
+            break
+    import re
+    name = re.sub(r"^[0-9a-f]{32}_", "", name)
     return name
 
 
@@ -597,27 +600,36 @@ def check_seg():
         return jsonify({"exists": False})
 
     # Check for segmentation files in output/segmentation/<stem>/
-    stem    = _stem(filename)
-    seg_dir = os.path.join(_OUTPUT_DIR, "segmentation", stem)
+    stem = _stem(filename)
+    import re
+    candidates = [stem]
+    clean = re.sub(r"^[0-9a-f]{32}_", "", stem)
+    if clean != stem:
+        candidates.append(clean)
+    clean_no_crop = re.sub(r"_cropped$", "", clean)
+    if clean_no_crop not in candidates:
+        candidates.append(clean_no_crop)
 
-    seg_full  = os.path.join(seg_dir, "seg_full.nii.gz")
-    original  = os.path.join(seg_dir, "original.nii.gz")
-    seg_hemi  = os.path.join(seg_dir, "seg_hemi.nii.gz")
-    summary   = os.path.join(seg_dir, "summary.json")
+    for c_stem in candidates:
+        seg_dir = os.path.join(_OUTPUT_DIR, "segmentation", c_stem)
+        seg_full  = os.path.join(seg_dir, "seg_full.nii.gz")
+        original  = os.path.join(seg_dir, "original.nii.gz")
+        seg_hemi  = os.path.join(seg_dir, "seg_hemi.nii.gz")
+        summary   = os.path.join(seg_dir, "summary.json")
 
-    if os.path.isfile(seg_full) and os.path.isfile(original):
-        outputs = {
-            "seg_full":  seg_full,
-            "original":  original,
-        }
-        seg_fs = os.path.join(seg_dir, "seg_fs_labels.nii.gz")
-        if os.path.isfile(seg_hemi):   outputs["seg_hemi"]  = seg_hemi
-        if os.path.isfile(summary):    outputs["summary"]   = summary
-        if os.path.isfile(seg_fs):     outputs["seg_fs"]    = seg_fs
-        return jsonify({
-            "exists":  True,
-            "outputs": outputs,
-        })
+        if os.path.isfile(seg_full) and os.path.isfile(original):
+            outputs = {
+                "seg_full":  seg_full,
+                "original":  original,
+            }
+            seg_fs = os.path.join(seg_dir, "seg_fs_labels.nii.gz")
+            if os.path.isfile(seg_hemi):   outputs["seg_hemi"]  = seg_hemi
+            if os.path.isfile(summary):    outputs["summary"]   = summary
+            if os.path.isfile(seg_fs):     outputs["seg_fs"]    = seg_fs
+            return jsonify({
+                "exists":  True,
+                "outputs": outputs,
+            })
     return jsonify({"exists": False})
 
 
@@ -750,6 +762,26 @@ def status_stream(job_id: str):
     )
 
 
+_seg_cache_lock = threading.Lock()
+_seg_cache: dict[str, tuple[float, np.ndarray, np.ndarray, nib.Nifti1Header]] = {}
+
+
+def _get_cached_seg(seg_path: str) -> tuple[np.ndarray, np.ndarray, nib.Nifti1Header]:
+    """Cache segmented volume arrays in memory to avoid repeated gzip decompression on multi-overlay requests."""
+    mtime = os.path.getmtime(seg_path)
+    with _seg_cache_lock:
+        if seg_path in _seg_cache:
+            c_mtime, arr, affine, header = _seg_cache[seg_path]
+            if c_mtime == mtime:
+                return arr, affine, header
+        img = nib.load(seg_path)
+        arr = np.round(img.get_fdata(dtype=np.float32)).astype(np.int32)
+        affine = img.affine
+        header = img.header.copy()
+        _seg_cache[seg_path] = (mtime, arr, affine, header)
+        return arr, affine, header
+
+
 @app.get("/mask")
 def get_mask():
     """
@@ -777,9 +809,8 @@ def get_mask():
             pass
 
     try:
-        img     = nib.load(seg_path)
-        arr     = np.round(img.get_fdata(dtype=np.float32)).astype(np.int32)
-        mask    = (arr == label).astype(np.uint8)
+        arr, affine, header = _get_cached_seg(seg_path)
+        mask = (arr == label).astype(np.uint8)
 
         # Remove excluded components using connected component labeling
         if excluded_ids:
@@ -801,7 +832,7 @@ def get_mask():
             for comp_id in excluded_ids:
                 mask[labeled == comp_id] = 0
 
-        out_img = nib.Nifti1Image(mask, img.affine, img.header)
+        out_img = nib.Nifti1Image(mask, affine, header)
         out_img.header.set_data_dtype(np.uint8)
 
         buf = io.BytesIO()
@@ -1189,8 +1220,7 @@ def preview3d():
     if _allowed_root(seg_path, suffixes=_NIFTI_SUFFIXES) is None:
         return jsonify({"error": "seg_path not found"}), 400
 
-    img     = nib.load(seg_path)
-    seg_arr = np.round(img.get_fdata(dtype=np.float32)).astype(np.int32)
+    seg_arr, affine, _ = _get_cached_seg(seg_path)
 
     if components_only:
         # Fast path — just compute connected components, no mesh
@@ -1218,7 +1248,7 @@ def preview3d():
 
     # Legacy full mesh path (used by STL export pipeline)
     result = _build_mesh_response(
-        seg_arr, img.affine, labels,
+        seg_arr, affine, labels,
         small_threshold=small_threshold,
     )
     if "error" in result:
@@ -1261,10 +1291,7 @@ def export3d():
     out_dir  = os.path.join(_OUTPUT_DIR, "3d-files", stem)
     os.makedirs(out_dir, exist_ok=True)
 
-    img     = nib.load(seg_path)
-    seg_arr = np.round(img.get_fdata(dtype=np.float32)).astype(np.int32)
-    affine  = img.affine
-    header  = img.header.copy()
+    seg_arr, affine, header = _get_cached_seg(seg_path)
 
     saved = []
     label_items = [(k, int(v)) for k, v in labels.items()]
@@ -1819,7 +1846,7 @@ def main():
     print("  ================================")
     print(f"  Running on  http://{args.host}:{args.port}")
     print("")
-    print(f"  → Open  http://localhost:{args.port}  in your browser")
+    print(f"  -> Open  http://localhost:{args.port}  in your browser")
     print("")
     print("  Press Ctrl+C to stop.\n")
 
