@@ -1307,10 +1307,10 @@
     <div id="help-box">
       <h3>KEYBOARD SHORTCUTS</h3>
       <div class="hk-row"><span class="hk-key">?</span><span class="hk-desc">TOGGLE THIS HELP</span></div>
-      <div class="hk-row"><span class="hk-key">R</span><span class="hk-desc">RESET VIEW</span></div>
+      <div class="hk-row"><span class="hk-key">R</span><span class="hk-desc">TOGGLE 3D ROTATION</span></div>
       <div class="hk-row"><span class="hk-key">A</span><span class="hk-desc">AUTO CONTRAST</span></div>
       <div class="hk-row"><span class="hk-key">S</span><span class="hk-desc">SCREENSHOT</span></div>
-      <div class="hk-row"><span class="hk-key">⇧R</span><span class="hk-desc">TOGGLE 3D ROTATION</span></div>
+      <div class="hk-row"><span class="hk-key">0 / Esc</span><span class="hk-desc">RESET VIEW</span></div>
       <div class="hk-row"><span class="hk-key">←→</span><span class="hk-desc">ROTATE 3D AZIMUTH</span></div>
       <div class="hk-row"><span class="hk-key">↑↓</span><span class="hk-desc">ROTATE 3D ELEVATION</span></div>
       <div class="hk-row"><span class="hk-key">T</span><span class="hk-desc">TOGGLE THEME (DARK/LIGHT)</span></div>
@@ -5250,7 +5250,9 @@ async function export3dFiles(stlParams = {}) {
         const combinedPath = finalData.saved.find(p => p.endsWith('_combined.stl'))
                           || finalData.saved[finalData.saved.length - 1];
         const fname = combinedPath.split(/[/\\]/).pop();
-        try { await _openStlViewer(combinedPath, fname); } catch(e) { console.warn('STL viewer:', e); }
+        try { await _openStlViewer(combinedPath, fname); } catch(e) {
+          console.warn('STL viewer:', e);
+        }
       }
 
     // ── NIfTI: plain JSON response (unchanged) ─────────────────────────
@@ -5302,7 +5304,17 @@ document.addEventListener('keydown', e => {
   if (e.key === 't') { toggleTheme(); return; }
 
   if (!loaded) return;
-  ({r:resetView, a:autoContrast, s:doScreenshot, R:togRotate})[e.key]?.();
+  const actionMap = {
+    r: togRotate,
+    R: togRotate,
+    a: autoContrast,
+    A: autoContrast,
+    s: doScreenshot,
+    S: doScreenshot,
+    '0': resetView,
+    Escape: resetView,
+  };
+  actionMap[e.key]?.();
 });
 
 // ── Console polyfill ────────────────────────
