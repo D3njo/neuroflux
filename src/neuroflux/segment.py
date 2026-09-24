@@ -45,10 +45,45 @@ import nibabel as nib
 import numpy as np
 
 from neuroflux.labels import HEMI_NAMES, TISSUE_NAMES, fs_to_hemi, fs_to_tissue
+from neuroflux.mesh_export import NONTISSUE_MAP_NAME
 from neuroflux.paths import resolve_models_dir
 
 # Acceleration policy (configured before TF import in _configure_tf)
 _ACCEL_NO_ACCEL = False
+
+
+def effective_tf_threads(threads: int) -> int:
+    """Thread count actually handed to TensorFlow.
+
+    The official TensorFlow 2.18 Windows CPU wheel aborts with
+    0xC0000005 (exit 3221225477) inside Eigen when intra-op parallelism
+    is raised on large 3-D convolutions. One thread is the stable setting.
+    """
+    threads = max(1, int(threads))
+    if platform.system() == "Windows":
+        return 1
+    return threads
+
+
+def looks_like_hounsfield(im) -> bool:
+    """
+    Return True if intensities resemble CT Hounsfield units.
+
+    Heuristic: clearly negative values (air / soft tissue below water) AND a
+    maximum of several hundred or more (bone / contrast). Used only to warn
+    when MRI percentile normalisation would crush soft tissue; never enables
+    CT mode automatically.
+    """
+    arr = np.asarray(im)
+    if arr.size == 0:
+        return False
+    flat = arr.ravel()
+    # Cap work on huge volumes; extrema are preserved under strided sampling
+    # well enough for this coarse check.
+    if flat.size > 1_000_000:
+        step = max(1, flat.size // 1_000_000)
+        flat = flat[::step]
+    return float(np.min(flat)) < -10.0 and float(np.max(flat)) >= 200.0
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +125,13 @@ def _configure_tf(threads: int, low_memory: bool = False, no_accel: bool = False
 
     _ACCEL_NO_ACCEL = no_accel
 
+    # Must be set before TensorFlow initialises. Setting the pool afterwards
+    # on the Windows CPU wheel is what produces the access violation.
+    threads = effective_tf_threads(threads)
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+    os.environ["TF_NUM_INTRAOP_THREADS"] = str(threads)
+    os.environ["TF_NUM_INTEROP_THREADS"] = "1"
+    os.environ["OMP_NUM_THREADS"] = str(threads)
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
     os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
@@ -104,7 +146,7 @@ def _configure_tf(threads: int, low_memory: bool = False, no_accel: bool = False
     finally:
         sys.stderr = old_stderr
 
-    tf.config.threading.set_inter_op_parallelism_threads(threads)
+    tf.config.threading.set_inter_op_parallelism_threads(1)
     tf.config.threading.set_intra_op_parallelism_threads(threads)
 
     for gpu in tf.config.list_physical_devices("GPU"):
@@ -578,35 +620,19 @@ def get_fov_profiles(input_path: str) -> dict:
 
 def _smart_crop(input_path: str) -> list:
     """
-    Compute safe per-axis crop sizes (mm) tailored to head anatomy.
+    Return fixed post-align RAS crop sizes in millimetres: [LR, AP, SI].
 
-    Ensures the brain and skull vertex are never clipped:
-    - SI (superior-inferior) needs 256mm (or full scan dimension) so the
-      cerebral cortex and vertex are NEVER cut off.
-    - AP (anterior-posterior) needs ~192mm (brain is ~170mm + margin).
-    - LR (left-right) needs ~160mm (brain is ~140mm + margin).
-    Combined with shift-strict region-centering in preprocess(), this guarantees
-    100% brain preservation while reducing peak tensor memory by ~38%.
+    SynthSeg ``preprocess`` applies cropping AFTER resample to 1 mm and
+    ``align_volume_to_ref`` to identity, so axis 0 = LR, 1 = AP, 2 = SI.
+    Sizes match head anatomy with margin (brain ~140×170 mm; SI keeps the
+    vertex). ``crop_volume_around_region`` already caps when the volume is
+    smaller — do not clamp SI to the original voxel count.
+
+    ``input_path`` is accepted for call-site compatibility; the returned crop
+    does not depend on spacing or axis permutation.
     """
-    img = nib.load(input_path)
-    shape = list(img.shape[:3])
-    affine = img.affine
-    del img
-
-    dom_map: dict[int, int] = {}
-    for ax in range(3):
-        dom = int(np.abs(affine[:3, ax]).argmax())
-        dom_map[dom] = ax
-
-    lr_axis = dom_map.get(0, 0)
-    ap_axis = dom_map.get(1, 1)
-    si_axis = dom_map.get(2, 2)
-
-    crop = [160, 160, 160]
-    crop[lr_axis] = 160
-    crop[ap_axis] = 192
-    crop[si_axis] = min(shape[si_axis], 256)
-    return crop
+    del input_path  # call-site compatibility only
+    return [160, 192, 256]
 
 
 # ── SynthSeg direct call ──────────────────────────────────────────────────────
@@ -615,7 +641,7 @@ def _run_synthseg(
     input_path, seg_path, resampled_path,
     posteriors_path, volumes_path, qc_path,
     robust=False, fast=False, threads=1, use_ct=False,
-    low_memory=False,
+    low_memory=False, nontissue_path=None,
 ):
     """
     Call SynthSeg's predict() directly in-process.
@@ -624,7 +650,7 @@ def _run_synthseg(
     low_memory mode reduces peak RAM by:
       - forcing fast=True (single forward pass instead of normal+flipped average → ~50% less peak RAM)
       - disabling QC model (adds significant activation memory + doubles inference time)
-      - per-axis brain crop (AP=192mm, LR/SI=160mm)
+      - per-axis brain crop (LR=160mm, AP=192mm, SI=256mm in post-align RAS)
       - skipping posteriors file output (still computed internally for volumes, freed immediately)
       - freeing input tensor before postprocessing
     These are the only knobs that actually reduce memory on CPU/Intel GPU;
@@ -636,6 +662,14 @@ def _run_synthseg(
     mode = "robust" if robust else "standard"
     model_dir = resolve_models_dir(require_weights=True)
 
+    tf_threads = effective_tf_threads(threads)
+    thread_note = ""
+    if tf_threads != max(1, int(threads)):
+        thread_note = (
+            f"; Windows CPU pinned to {tf_threads} thread "
+            "(TensorFlow 2.18 crashes with more on large 3-D convs)"
+        )
+
     if low_memory:
         # fast=True: skip the flipped-image second pass (halves peak activation RAM)
         fast = True
@@ -646,12 +680,12 @@ def _run_synthseg(
         do_posteriors = None
         cropping = _smart_crop(input_path)
         _emit("synthseg", 8,
-              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop{cropping}+no-QC+no-posteriors, {threads} thread(s))…")
+              f"SynthSeg 2.0 ({mode}, low_memory: fast+crop{cropping}+no-QC+no-posteriors, {tf_threads} thread(s){thread_note})…")
     else:
         cropping      = None
         do_qc_path    = qc_path
         do_posteriors = posteriors_path
-        _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {threads} thread(s))…")
+        _emit("synthseg", 8, f"SynthSeg 2.0 ({mode} mode, {tf_threads} thread(s){thread_note})…")
 
     try:
         _ss_predict(
@@ -681,6 +715,10 @@ def _run_synthseg(
             names_parcellation        = str(_DATA_DIR / "synthseg_parcellation_names.npy"),
             names_qc                  = str(_DATA_DIR / "synthseg_qc_names_2.0.npy"),
             topology_classes          = str(_DATA_DIR / "synthseg_topological_classes_2.0.npy"),
+            # Billot's 0.5-voxel posterior blur turns thin sulcal CSF into
+            # cortex before argmax; the mesh export smooths the surface itself.
+            sigma_smoothing           = 0.0,
+            path_nontissue            = nontissue_path,
             verbose                   = False,
         )
     except SystemExit as e:
@@ -901,6 +939,7 @@ def run_pipeline(
             threads=threads,
             use_ct=use_ct,
             low_memory=low_memory,
+            nontissue_path=None if use_ct else out(NONTISSUE_MAP_NAME),
         )
 
         if not os.path.isfile(fs_seg_path):

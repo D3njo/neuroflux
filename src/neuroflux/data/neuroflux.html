@@ -820,6 +820,11 @@
               <span class="seg-layer-label">WM — RIGHT</span>
               <label class="tog"><input type="checkbox" id="ol-h-wmr" onchange="togOverlay('h-wmr')"><span class="ts"></span></label>
             </div>
+            <div class="seg-layer">
+              <div class="seg-dot" style="background:#ffcc44;"></div>
+              <span class="seg-layer-label">CORPUS CALLOSUM</span>
+              <label class="tog"><input type="checkbox" id="ol-h-cc" onchange="togOverlay('h-cc')"><span class="ts"></span></label>
+            </div>
 
             <div class="seg-layer">
               <div class="seg-dot" style="background:#00cfff;"></div>
@@ -2412,6 +2417,7 @@ const SEG_OVERLAYS_HEMI = {
   'h-gmr':       { label:3,  name:'hemi_gmr',        cmap:'green',  calMin:0.5, calMax:1.5, opacity:0.5  },
   'h-wml':       { label:4,  name:'hemi_wml',        cmap:'orange',   calMin:0.5, calMax:1.5, opacity:0.5  },
   'h-wmr':       { label:5,  name:'hemi_wmr',        cmap:'orange',   calMin:0.5, calMax:1.5, opacity:0.5  },
+  'h-cc':        { label:6,  name:'hemi_cc',         cmap:'yellow',  calMin:0.5, calMax:1.5, opacity:0.55 },
   'h-dgml':      { label:7,  name:'hemi_dgml',       cmap:'cool',   calMin:0.5, calMax:1.5, opacity:0.55 },
   'h-dgmr':      { label:8,  name:'hemi_dgmr',       cmap:'cool',   calMin:0.5, calMax:1.5, opacity:0.55 },
   'h-brainstem': { label:9,  name:'hemi_brainstem',  cmap:'red',    calMin:0.5, calMax:1.5, opacity:0.55 },
@@ -2425,6 +2431,11 @@ const SEG_OVERLAYS_STRUCT = {
   'fs-42':  { label:42,  name:'fs_r_ctx',    color:'#33bb55', opacity:0.5,  disp:'Cortex — R',         group:'CORTEX & WM'   },
   'fs-2':   { label:2,   name:'fs_l_wm',     color:'#ff8833', opacity:0.5,  disp:'White Matter — L',   group:'CORTEX & WM'   },
   'fs-41':  { label:41,  name:'fs_r_wm',     color:'#ee7722', opacity:0.5,  disp:'White Matter — R',   group:'CORTEX & WM'   },
+  'fs-251': { label:251, name:'fs_cc_post',  color:'#ffcc44', opacity:0.55, disp:'CC Posterior',       group:'CORTEX & WM'   },
+  'fs-252': { label:252, name:'fs_cc_midp',  color:'#ffbb33', opacity:0.55, disp:'CC Mid-Posterior',   group:'CORTEX & WM'   },
+  'fs-253': { label:253, name:'fs_cc_cen',   color:'#ffaa22', opacity:0.55, disp:'CC Central',         group:'CORTEX & WM'   },
+  'fs-254': { label:254, name:'fs_cc_mida',  color:'#ff9911', opacity:0.55, disp:'CC Mid-Anterior',    group:'CORTEX & WM'   },
+  'fs-255': { label:255, name:'fs_cc_ant',   color:'#ee8800', opacity:0.55, disp:'CC Anterior',        group:'CORTEX & WM'   },
   'fs-4':   { label:4,   name:'fs_l_latv',   color:'#3399ff', opacity:0.55, disp:'Lat. Ventricle — L', group:'VENTRICLES'    },
   'fs-43':  { label:43,  name:'fs_r_latv',   color:'#2288ee', opacity:0.55, disp:'Lat. Ventricle — R', group:'VENTRICLES'    },
   'fs-14':  { label:14,  name:'fs_3v',       color:'#55aaff', opacity:0.6,  disp:'3rd Ventricle',      group:'VENTRICLES'    },
@@ -3115,9 +3126,11 @@ async function ctBoneSave() {
           if (stlData.saved?.length) {
             saved.push(...stlData.saved.map(p => p.split(/[/\\]/).pop()));
             // Open STL preview (same viewer as brain tissue export)
-            const stlPath = stlData.saved.find(p => p.endsWith('_combined.stl')) || stlData.saved[stlData.saved.length - 1];
+            const savedPaths = stlData.saved.map(p => String(p));
+            const stlPath = savedPaths.find(p => p.endsWith('_combined.stl')) || savedPaths[savedPaths.length - 1];
             const fname   = stlPath.split(/[/\\]/).pop();
-            try { await _openStlViewer(stlPath, fname); } catch(e) { console.warn('STL viewer:', e); }
+            try { await _openStlViewer(stlPath, fname); }
+            catch(e) { sts.textContent = `Saved, but the STL preview did not open: ${e.message}`; }
           }
         } finally {
           // Always delete the temp NIfTI regardless of STL success/failure
@@ -3256,12 +3269,38 @@ let _stlDlBuffer  = null;
 let _stlDlName    = 'mesh.stl';
 
 async function _loadScript(src) {
-  if (document.querySelector(`script[src="${src}"]`)) return;
+  const existing = document.querySelector(`script[src="${src}"]`);
+  if (existing) {
+    if (existing.dataset.loaded === '1') return;
+    return new Promise((res, rej) => {
+      existing.addEventListener('load', res, { once: true });
+      existing.addEventListener('error', rej, { once: true });
+    });
+  }
   return new Promise((res, rej) => {
     const s = document.createElement('script');
-    s.src = src; s.onload = res; s.onerror = rej;
+    s.src = src;
+    s.onload = () => { s.dataset.loaded = '1'; res(); };
+    s.onerror = rej;
     document.head.appendChild(s);
   });
+}
+
+async function _ensureStlThree() {
+  // The page already loads Three r128. Reuse it and only fetch the STL
+  // loader for that revision, instead of replacing THREE with a second build.
+  if (!window.THREE) {
+    await _loadScript('https://cdn.jsdelivr.net/npm/three@0.134.0/build/three.min.js');
+  }
+  if (!window.THREE) throw new Error('THREE global missing');
+  const rev = String(window.THREE.REVISION || '134');
+  const base = `https://cdn.jsdelivr.net/npm/three@0.${rev}.0`;
+  if (!window.THREE.STLLoader) {
+    await _loadScript(`${base}/examples/js/loaders/STLLoader.js`);
+  }
+  if (!window.THREE.OrbitControls) {
+    await _loadScript(`${base}/examples/js/controls/OrbitControls.js`);
+  }
 }
 
 async function _openStlViewer(stlPath, filename) {
@@ -3269,12 +3308,8 @@ async function _openStlViewer(stlPath, filename) {
   id('stl-viewer-modal').classList.add('on');
   id('stl-viewer-info').textContent = 'Loading Three.js…';
 
-  // Lazy-load Three.js + addons (r134 — last version with global THREE.* exports)
-  const base = 'https://cdn.jsdelivr.net/npm/three@0.134.0';
   try {
-    await _loadScript(`${base}/build/three.min.js`);
-    await _loadScript(`${base}/examples/js/loaders/STLLoader.js`);
-    await _loadScript(`${base}/examples/js/controls/OrbitControls.js`);
+    await _ensureStlThree();
   } catch(e) {
     id('stl-viewer-info').textContent = 'Could not load Three.js (no internet?): ' + e.message;
     return;
@@ -3291,7 +3326,11 @@ async function _openStlViewer(stlPath, filename) {
   }
 
   id('stl-dl-btn').onclick = _downloadStl;
-  _initStlScene(_stlDlBuffer);
+  try {
+    _initStlScene(_stlDlBuffer);
+  } catch (e) {
+    id('stl-viewer-info').textContent = 'Preview failed: ' + e.message;
+  }
 }
 
 function _initStlScene(buffer) {
@@ -4953,7 +4992,7 @@ async function togStructAll(checked) {
 // Used so the 3D preview always runs on seg_full with correct tissue colors
 const HEMI_TO_FULL_LABEL = {
   'h-csf': 1, 'h-gml': 2, 'h-gmr': 2,
-  'h-wml': 3, 'h-wmr': 3,
+  'h-wml': 3, 'h-wmr': 3, 'h-cc': 3,
   'h-dgml':4, 'h-dgmr':4,
   'h-brainstem':5, 'h-cerebellum':6,
 };
@@ -4970,7 +5009,7 @@ function onExport3dClick() {
     // Hemispheres mode — use seg_hemi with its 8 labels
     segPath = segPaths.seg_hemi;
     labelSchema = 'hemi';
-    allLabels = { csf:1, gml:2, gmr:3, wml:4, wmr:5, dgml:7, dgmr:8, bs:9, cb:10 };
+    allLabels = { csf:1, gml:2, gmr:3, wml:4, wmr:5, cc:6, dgml:7, dgmr:8, bs:9, cb:10 };
     selectedLabels = new Set();
     Object.entries(SEG_OVERLAYS_HEMI).forEach(([key, cfg]) => {
       if (id('ol-' + key)?.checked) selectedLabels.add(cfg.label);
@@ -5021,38 +5060,39 @@ function _stlToggleHollow(checked) {
 const STL_PRESETS = {
   standard: {
     name: 'ANATOMICAL',
-    desc: 'SDF surface with minimal polish and high anatomical fidelity. Preserves complex sulcal morphology and cortical folds.',
-    hint: 'SDF surface · low smoothing · high anatomical fidelity · mesh report',
-    sigma: 0, taubin: 0, sulci_enhance: 0.65, hc_iter: 12, upsample: 1, max_faces: 900000,
+    desc: 'Light SDF polish with no tissue-profile blur. Low HC and moderate sulci enhance preserve folds without inventing ridges.',
+    hint: 'custom smoothing · sigma 0 · light HC · high anatomical fidelity',
+    smoothing: 'custom', sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 3, upsample: 1, max_faces: 900000,
     surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
   },
   detail: {
     name: 'FDM 1:1 PRINT',
-    desc: '0.4 mm nozzle profile with detail compensation without heavy blur. Designed for physical extrusion balance.',
-    hint: '0.4 mm FDM profile · restrained smoothing · print-aware face cap',
-    sigma: 0, taubin: 0, sulci_enhance: 0.50, hc_iter: 10, upsample: 1, max_faces: 800000,
+    desc: '0.4 mm nozzle profile with tissue-aware SDF smoothing. Designed for physical extrusion balance.',
+    hint: '0.4 mm FDM · tissue profiles · print-aware face cap',
+    smoothing: 'profile', sigma: 0, taubin: 0, sulci_enhance: 0.50, hc_iter: 10, upsample: 1, max_faces: 800000,
     surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
   },
   ultra: {
     name: 'RESIN / SLA',
-    desc: '2× SDF sub-voxel oversampling for razor-sharp sulci and gyri. Tailored for resin 3D printing and digital rendering.',
-    hint: '×2 SDF sampling · multipart detail · higher memory use',
-    sigma: 0, taubin: 0, sulci_enhance: 0.80, hc_iter: 16, upsample: 2, max_faces: 1500000,
+    desc: '2× SDF sub-voxel oversampling with custom low/zero Gaussian so profile blur is not stacked on high HC.',
+    hint: '×2 SDF · custom low smoothing · multipart · higher memory',
+    smoothing: 'custom', sigma: 0, taubin: 2, sulci_enhance: 0.80, hc_iter: 16, upsample: 2, max_faces: 1500000,
     surface_mode: 'sdf', combined_mode: 'multipart', nozzle: 0.25, layer: 0.05, scale: 1.0,
   },
   print: {
     name: 'PRINT READY',
-    desc: 'Smoothed outer shell for FDM / PLA. Reduces fragile micro-ridges for seamless printing without losing anatomical shape.',
-    hint: 'FDM-safe outer shell · reduces fragile ridges without erasing anatomy',
-    sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8, upsample: 1, max_faces: 700000,
+    desc: 'Tissue-profile outer shell for FDM / PLA. Nozzle-aware decimation reduces fragile micro-ridges.',
+    hint: 'FDM-safe · tissue profiles · nozzle-aware faces',
+    smoothing: 'profile', sigma: 0, taubin: 0, sulci_enhance: 0.30, hc_iter: 8, upsample: 1, max_faces: 700000,
     surface_mode: 'sdf', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
   },
   smooth: {
     name: 'SMOOTH',
     desc: 'Classic volume smoothing with Taubin filtering. Soft contours, minimal facet count, and lightweight file size.',
     hint: 'legacy volume smoothing · soft surface · smallest files',
-    sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0, upsample: 1, max_faces: 250000,
+    smoothing: 'custom', sigma: 1.0, taubin: 18, sulci_enhance: 0.0, hc_iter: 0, upsample: 1, max_faces: 250000,
     surface_mode: 'volume', combined_mode: 'external_shell', nozzle: 0.40, layer: 0.20, scale: 1.0,
+    sulcal_recovery: false,
   },
 };
 
@@ -5102,6 +5142,7 @@ async function _stlExportConfirm() {
   id('stl-modal').classList.remove('on');
   const p = _stlGetPreset();
   export3dFiles({
+    smoothing:           p.smoothing          ?? 'profile',
     sigma:               p.sigma,
     taubin:              p.taubin,
     max_faces:           parseInt(id('stl-faces').value),
@@ -5111,6 +5152,7 @@ async function _stlExportConfirm() {
     sulci_enhance:       p.sulci_enhance,
     hc_iter:             p.hc_iter,
     upsample:            p.upsample ?? 1,
+    sulcal_recovery:     p.sulcal_recovery ?? true,
     surface_mode:        p.surface_mode,
     combined_mode:       id('stl-combined-mode')?.value || p.combined_mode,
     nozzle_mm:           parseFloat(id('stl-nozzle')?.value || p.nozzle),
@@ -5121,6 +5163,19 @@ async function _stlExportConfirm() {
   });
 }
 
+function _parseSseData(block) {
+  const line = String(block || '').trim();
+  if (!line.startsWith('data:')) return null;
+  const raw = line.replace(/^data:\s*/, '');
+  // JSON.parse rejects NaN/Infinity. Those values used to drop the done
+  // event, so the file was saved and the STL preview never opened.
+  const sanitized = raw
+    .replace(/\b-Infinity\b/g, 'null')
+    .replace(/\bInfinity\b/g, 'null')
+    .replace(/\bNaN\b/g, 'null');
+  try { return JSON.parse(sanitized); } catch { return null; }
+}
+
 async function _readExportSseResponse(res, onMessage) {
   if (!res.body) throw new Error('Export stream unavailable');
   const reader  = res.body.getReader();
@@ -5128,23 +5183,27 @@ async function _readExportSseResponse(res, onMessage) {
   let buf = '';
   let finalData = null;
 
-  outer: while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
+  const take = (block) => {
+    const msg = _parseSseData(block);
+    if (!msg) return;
+    if (onMessage) onMessage(msg);
+    if (msg.status === 'error') throw new Error(msg.error || 'Export error');
+    if (msg.status === 'done') finalData = msg;
+  };
 
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      buf += decoder.decode();
+      if (buf.trim()) take(buf);
+      break;
+    }
+    buf += decoder.decode(value, { stream: true });
     const parts = buf.split('\n\n');
     buf = parts.pop();
-
     for (const part of parts) {
-      const line = part.trim();
-      if (!line.startsWith('data: ')) continue;
-      let msg;
-      try { msg = JSON.parse(line.slice(6)); } catch { continue; }
-
-      if (onMessage) onMessage(msg);
-      if (msg.status === 'error') throw new Error(msg.error || 'Export error');
-      if (msg.status === 'done') { finalData = msg; break outer; }
+      take(part);
+      if (finalData) return finalData;
     }
   }
 
@@ -5165,7 +5224,8 @@ function _stlReportSummary(finalData) {
   const warning = report.edge_mm?.median && printer.nozzle_mm && report.edge_mm.median < printer.nozzle_mm * 0.5
     ? `below ${printer.nozzle_mm} mm nozzle detail`
     : '';
-  return [faces, watertight, components, edge, warning].filter(Boolean).join(' · ');
+  const qErr = report.error || (finalData?.quality_errors && finalData.quality_errors[0]) || '';
+  return [faces, watertight, components, edge, warning, qErr].filter(Boolean).join(' · ');
 }
 
 async function export3dFiles(stlParams = {}) {
@@ -5205,12 +5265,14 @@ async function export3dFiles(stlParams = {}) {
     label_schema: labelSchema,
     filename:  _loadedFile?.name || '',
     timestamp: exTs,
+    stl_smoothing:       stlParams.smoothing          ?? 'profile',
     stl_sigma:           stlParams.sigma              ?? 0,
     stl_taubin:          stlParams.taubin             ?? 0,
     stl_max_faces:       stlParams.max_faces          ?? 300000,
     stl_sulci_enhance:   stlParams.sulci_enhance      ?? 0.4,
     stl_hc_iter:         stlParams.hc_iter            ?? 10,
     stl_upsample:        stlParams.upsample           ?? 1,
+    stl_sulcal_recovery: stlParams.sulcal_recovery    ?? true,
     stl_flat_base:       stlParams.flat_base          ?? false,
     stl_surface_mode:    stlParams.surface_mode       ?? 'sdf',
     stl_combined_mode:   stlParams.combined_mode      ?? 'external_shell',
@@ -5244,14 +5306,18 @@ async function export3dFiles(stlParams = {}) {
       _p3dFrozenLabelSchema = null;
       _exportProg(100);
       const n = finalData.saved?.length || 0;
-      const summary = _stlReportSummary(finalData);
+      let summary = '';
+      try { summary = _stlReportSummary(finalData); } catch { summary = ''; }
       _exportStatus(`${n} file${n !== 1 ? 's' : ''} saved → 3d-files/${summary ? ' · ' + summary : ''}`);
       if (finalData.saved?.length) {
-        const combinedPath = finalData.saved.find(p => p.endsWith('_combined.stl'))
-                          || finalData.saved[finalData.saved.length - 1];
-        const fname = combinedPath.split(/[/\\]/).pop();
-        try { await _openStlViewer(combinedPath, fname); } catch(e) {
-          console.warn('STL viewer:', e);
+        try {
+          const savedPaths = finalData.saved.map(p => String(p));
+          const combinedPath = savedPaths.find(p => p.endsWith('_combined.stl'))
+                            || savedPaths[savedPaths.length - 1];
+          const fname = combinedPath.split(/[/\\]/).pop();
+          await _openStlViewer(combinedPath, fname);
+        } catch(e) {
+          _exportStatus(`File saved, but the STL preview did not open: ${e.message}`, true);
         }
       }
 
@@ -5330,6 +5396,14 @@ document.addEventListener('keydown', e => {
 
 // ── Boot ─────────────────────────────────────
 window.addEventListener('load', () => {
+  // Default inference threads: min(4, hardwareConcurrency). Windows CPU
+  // TensorFlow 2.18 access-violates (exit 3221225477) above 1 thread.
+  const threadsEl = id('opt-threads');
+  if (threadsEl) {
+    const isWin = /Windows/i.test(navigator.userAgent || '');
+    const cores = Number(navigator.hardwareConcurrency) || 4;
+    threadsEl.value = String(isWin ? 1 : Math.max(1, Math.min(4, cores)));
+  }
   initViewers();
   checkHardware();
   _refreshSessions();
@@ -5446,10 +5520,18 @@ window.p3dOpen = async function p3dOpen(labels, selectedFullLabels, segPath, lab
   // ── Step 1: get component info from server (lightweight — no mesh) ─────
   let data;
   try {
+    const compLabels = {};
+    Object.entries(labels).forEach(([key, value]) => {
+      if (!selectedFullLabels || selectedFullLabels.has(Number(value))) compLabels[key] = value;
+    });
     const res = await fetch(`${SEG_SERVER}/preview3d`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seg_path: _p3dSegPath, labels, components_only: true }),
+      body: JSON.stringify({
+        seg_path: _p3dSegPath,
+        labels: Object.keys(compLabels).length ? compLabels : labels,
+        components_only: true,
+      }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();

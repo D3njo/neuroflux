@@ -290,3 +290,13 @@ class TestFileMutationSafety:
         assert a != b
         assert a.endswith("brain.nii.gz")
         assert os.path.basename(a) != "brain.nii.gz"
+
+
+class TestNativeCrashHint:
+    def test_access_violation_mentions_robust_and_threads(self):
+        from neuroflux.server import _native_crash_hint
+
+        hint = _native_crash_hint(3221225477)
+        assert "0xC0000005" in hint
+        assert "Robust" in hint
+        assert _native_crash_hint(1) == ""

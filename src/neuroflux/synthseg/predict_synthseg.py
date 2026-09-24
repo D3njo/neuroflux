@@ -36,6 +36,7 @@ from .ext.neuron import models as nrn_models
 from .keras_compat import set_keras_shape, tensor_static_shape
 from .predict import get_flip_indices, write_csv
 
+
 # ── Model cache ───────────────────────────────────────────────────────────────
 # Keeps loaded Keras models alive across predict() calls so the server does
 # not reload ~3 GB of weights on every segmentation request.
@@ -72,6 +73,7 @@ def _run_inference(bundle, image, shape_input, do_parcellation, do_qc, bucket_sh
             post_patch_segmentation = seg_out
         post_patch_parcellation = None
 
+
     # Sequential test-time augmentation (flipped inference) to halve peak RAM and avoid OOM
     if bundle.flip_indices is not None:
         import gc
@@ -94,6 +96,7 @@ def _run_inference(bundle, image, shape_input, do_parcellation, do_qc, bucket_sh
         post_patch_segmentation = 0.5 * (out1.astype(np.float32) + out2.astype(np.float32))
         del out1, out2
         gc.collect()
+
 
     # Gaussian smoothing of posteriors in NumPy (avoids 33-channel Conv3D OOM)
     if bundle.sigma_smoothing > 0:
@@ -126,6 +129,20 @@ def _run_qc_network(qc_net, qc_volume):
     if isinstance(out, tuple):
         return out[0]
     return out
+
+
+def save_nontissue_map(posteriors, labels_segmentation, aff, header, path):
+    """Save P(background) + P(extracerebral CSF) as uint8 (0-255) on the seg grid.
+
+    Hard labels drop this partial volume; the mesh export uses it to open
+    sulci the argmax assigned to cortex. Costs one byte per voxel, so it is
+    written even in low-memory mode where the full posteriors are skipped.
+    """
+    p = np.zeros(posteriors.shape[:3], dtype=np.float32)
+    for i, lbl in enumerate(labels_segmentation):
+        if int(lbl) in (0, 24):
+            p += posteriors[..., i]
+    utils.save_volume(np.clip(p * 255.0, 0, 255), aff, header, path, dtype='uint8')
 
 
 def _model_predict(net, inputs):
@@ -169,6 +186,7 @@ def predict(path_images,
             names_qc=None,
             topology_classes=None,
             sigma_smoothing=0.5,
+            path_nontissue=None,
             input_shape_qc=224,
             gt_folder=None,
             evaluation_labels=None,
@@ -315,6 +333,8 @@ def predict(path_images,
                 utils.save_volume(seg, aff, h, path_segmentations[i], dtype='int32')
                 if path_posteriors[i] is not None:
                     utils.save_volume(posteriors, aff, h, path_posteriors[i], dtype='float32')
+                if path_nontissue is not None:
+                    save_nontissue_map(posteriors, labels_segmentation, aff, h, path_nontissue)
                 # Free posteriors (probability maps) — structural regions come from
                 # the hard segmentation (seg), not posteriors.  Posteriors are only
                 # used internally for volume calculation and are already computed.
@@ -588,6 +608,17 @@ def preprocess(path_image, ct, target_res=1., n_levels=5, crop=None, min_pad=Non
             im, crop_idx = edit_volumes.crop_volume(im, cropping_shape=crop_shape, return_crop_idx=True)
     else:
         crop_idx = None
+
+    # Warn when intensities look like CT Hounsfield units but CT mode is off.
+    # Do not silently enable ct — the user may have turned it off on purpose.
+    if not ct:
+        from neuroflux.segment import looks_like_hounsfield
+        if looks_like_hounsfield(im):
+            print(
+                'WARNING: intensities look like CT Hounsfield units, but CT mode '
+                'is off. MRI percentile normalisation will crush soft tissue — '
+                'enable --ct / the CT flag for correct CT preprocessing.'
+            )
 
     # normalise image
     if ct:
@@ -894,6 +925,7 @@ def postprocess(post_patch_seg, post_patch_parc, shape, pad_idx, crop_idx,
     volumes = np.around(volumes * np.prod(im_res), 3)
 
     posteriors = posteriors.astype(np.float16, copy=False)
+
 
     return seg, posteriors, volumes
 

@@ -74,7 +74,14 @@ import numpy as np
 from flask import Flask, Response, abort, jsonify, request, send_file
 from flask_cors import CORS
 
-from neuroflux.mesh_export import iter_stl_export, stl_options_from_body
+from neuroflux.mesh_export import (
+    StlExportOptions,
+    build_tissue_meshes,
+    iter_stl_export,
+    json_ready,
+    load_nontissue_map,
+    stl_options_from_body,
+)
 
 app   = Flask(__name__)
 CORS(app, origins=re.compile(r"https?://(localhost|127\.0\.0\.1)(:\d+)?"))
@@ -215,6 +222,20 @@ def _push_job_error(job: dict, msg: str) -> None:
             pass
 
 
+def _native_crash_hint(returncode: int) -> str:
+    """Explain a Windows access violation from the SynthSeg subprocess."""
+    code = returncode & 0xFFFFFFFF
+    if code != 0xC0000005:
+        return ""
+    return (
+        "Native crash (Windows access violation 0xC0000005) inside TensorFlow, "
+        "while SynthSeg builds or runs the 3D network. On the Windows CPU build "
+        "this is triggered by several inference threads, and Robust mode makes "
+        "the network much larger. Threads are now pinned to 1 on Windows. "
+        "If it still crashes, uncheck Robust and run again. Low-memory can stay on."
+    )
+
+
 def _run_job(
     job_id: str,
     input_path: str,
@@ -253,6 +274,8 @@ def _run_job(
         env = os.environ.copy()
         env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
         env.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+        # Read by the Intel OpenMP runtime when TensorFlow loads beside NumPy.
+        env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
         proc = subprocess.Popen(
             cmd,
@@ -336,6 +359,9 @@ def _run_job(
             stderr_out = "".join(stderr_lines).strip()
             stdout_out = "\n".join(stdout_tail).strip()
             details = []
+            hint = _native_crash_hint(proc.returncode)
+            if hint:
+                details.append(hint)
             if stderr_out:
                 details.append(f"stderr:\n{stderr_out}")
             if stdout_out:
@@ -462,8 +488,6 @@ def serve_demo():
         if os.path.isfile(demo_path):
             return send_file(demo_path, mimetype="application/octet-stream")
     return jsonify({"error": "demo scan not found"}), 404
-
-
 
 
 @app.post("/upload")
@@ -1007,19 +1031,18 @@ def refine():
 
 def _build_mesh_response(seg_arr, affine, labels,
                           excluded_comps=None, painted_points_mm=None,
-                          brush_radius_mm=6.0, small_threshold=None):
+                          brush_radius_mm=6.0, small_threshold=None,
+                          label_schema="full", stl_options=None):
     """
     Shared mesh-building logic for /preview3d.
-    Now includes per-tissue vertex coloring for the 3D preview.
+    Uses the same schema-aware SDF pipeline as STL export, with a lower face cap.
     """
     import trimesh
-    from scipy.ndimage import gaussian_filter
     from scipy.ndimage import label as nd_label
-    from skimage.measure import marching_cubes
 
     excluded_comps = excluded_comps or set()
 
-    # Build combined binary float mask
+    # Build combined binary float mask (for component stats / paint erasure)
     combined = np.zeros_like(seg_arr, dtype=np.float32)
     for _, lbl in labels.items():
         combined[seg_arr == int(lbl)] = 1.0
@@ -1075,69 +1098,39 @@ def _build_mesh_response(seg_arr, affine, labels,
         c["is_main"]  = c["id"] == comp_info[0]["id"]
         c["is_small"] = c["voxel_count"] < thresh
 
-    # ── Per-tissue meshing for preview ──────────────────────────────────────
-    # Mesh each tissue label separately to avoid inter-tissue boundary artefacts,
-    # then merge all into one trimesh for the preview renderer.
-    # This is the same principle as the STL export pipeline.
-    from trimesh import smoothing as tri_smooth
-
-    # Tissue-specific sigma — matches STL export pipeline defaults
-    # GM (2) and cerebellum (6) use lower sigma to preserve sulci/folia
-    TISSUE_SIGMA = {1: 0.8, 2: 0.5, 3: 0.8, 4: 0.7, 5: 0.85, 6: 0.55}
-    TISSUE_SIGMA_DEFAULT = 0.8  # fallback for unknown labels
-
-    vox2mm = affine[:3, :3]
-    origin = affine[:3,  3]
-
-    tissue_meshes  = []   # (trimesh, tissue_label)
-    unique_labels  = [int(lbl) for lbl in set(labels.values()) if int(lbl) > 0]
-
+    unique_labels = [int(lbl) for lbl in set(labels.values()) if int(lbl) > 0]
     if not unique_labels:
         return {"error": "No labels selected"}
 
-    for lbl in unique_labels:
-        mask = (seg_arr == lbl).astype(np.float32)
-        if mask.sum() < 100:
-            continue
-        sigma = TISSUE_SIGMA.get(lbl, TISSUE_SIGMA_DEFAULT)
-        smoothed = gaussian_filter(mask, sigma=sigma)
-        if smoothed.max() < 0.3:
-            continue
-        try:
-            verts, faces_mc, _, _ = marching_cubes(smoothed, level=0.5)
-        except Exception:
-            continue
-        verts_mm = (verts @ vox2mm.T) + origin
-        # process=False — preserve all faces, fix manually below
-        m = trimesh.Trimesh(vertices=verts_mm, faces=faces_mc, process=False)
-        try:
-            tri_smooth.filter_taubin(m, lamb=0.5, nu=0.53, iterations=10)
-            m.remove_degenerate_faces()
-            m.remove_duplicate_faces()
-            trimesh.repair.fix_normals(m)
-            # Multiple fill_holes passes for deep sulci
-            for _ in range(3):
-                if m.is_watertight:
-                    break
-                trimesh.repair.fill_holes(m)
-            trimesh.repair.fix_normals(m)
-        except Exception:
-            pass
-        tissue_meshes.append((m, lbl))
+    # Zero out erased voxels in a working copy so SDF meshes match the preview mask
+    work_seg = np.array(seg_arr, copy=True)
+    work_seg[combined <= 0] = 0
+
+    preview_opts = stl_options or StlExportOptions(
+        label_schema=label_schema,
+        sulci_enhance=0.0,
+        hc_iter=0,
+        smoothing="profile",
+    )
+    if getattr(preview_opts, "label_schema", None) != label_schema:
+        from dataclasses import replace
+        preview_opts = replace(preview_opts, label_schema=label_schema)
+
+    tissue_meshes = build_tissue_meshes(
+        work_seg,
+        affine,
+        labels,
+        options=preview_opts,
+        max_faces=150_000,
+    )
 
     if not tissue_meshes:
         return {"error": "No mesh surface found"}
 
-    # Build per-vertex tissue array BEFORE merge (trimesh concatenate preserves vertex order)
-    vertex_tissue_parts = []
-    mesh_parts = []
-    for m, lbl in tissue_meshes:
-        vertex_tissue_parts.append(np.full(len(m.vertices), lbl, dtype=np.int32))
-        mesh_parts.append(m)
-
+    mesh_parts = [m for m, _ in tissue_meshes]
     mesh_obj = trimesh.util.concatenate(mesh_parts) if len(mesh_parts) > 1 else mesh_parts[0]
 
-    # Decimate for preview (keep responsive)
+    # Extra preview face cap after merge
     if len(mesh_obj.faces) > 150_000:
         try:
             mesh_obj = mesh_obj.simplify_quadric_decimation(face_count=150_000)
@@ -1145,8 +1138,6 @@ def _build_mesh_response(seg_arr, affine, labels,
             pass
 
     # Assign vertex tissue + component IDs via inverse affine lookup into seg_arr
-    # This is the most reliable approach — works after decimation too.
-    # For vertices landing on background (0), search 6-connected neighbours.
     try:
         inv_affine = np.linalg.inv(affine)
         v_hom = np.column_stack([mesh_obj.vertices,
@@ -1155,7 +1146,7 @@ def _build_mesh_response(seg_arr, affine, labels,
         vi = np.clip(np.round(v_vox[:, 0]).astype(int), 0, seg_arr.shape[0] - 1)
         vj = np.clip(np.round(v_vox[:, 1]).astype(int), 0, seg_arr.shape[1] - 1)
         vk = np.clip(np.round(v_vox[:, 2]).astype(int), 0, seg_arr.shape[2] - 1)
-        vertex_tissue = seg_arr[vi, vj, vk].astype(np.int32)
+        vertex_tissue = work_seg[vi, vj, vk].astype(np.int32)
         # Fill background hits by searching adjacent voxels
         bg = vertex_tissue == 0
         for dx, dy, dz in [(1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)]:
@@ -1164,7 +1155,7 @@ def _build_mesh_response(seg_arr, affine, labels,
             ni = np.clip(vi + dx, 0, seg_arr.shape[0]-1)
             nj = np.clip(vj + dy, 0, seg_arr.shape[1]-1)
             nk = np.clip(vk + dz, 0, seg_arr.shape[2]-1)
-            t  = seg_arr[ni, nj, nk]
+            t  = work_seg[ni, nj, nk]
             fix = bg & (t > 0)
             vertex_tissue[fix] = t[fix]
             bg = vertex_tissue == 0
@@ -1177,7 +1168,6 @@ def _build_mesh_response(seg_arr, affine, labels,
         vertex_comp   = np.zeros(len(mesh_obj.vertices), dtype=np.int32)
         vertex_tissue = np.zeros(len(mesh_obj.vertices), dtype=np.int32)
 
-    # Tissue presence index for frontend toggle panel
     tissue_mesh_ranges = {int(lbl): True for _, lbl in tissue_meshes}
 
     return {
@@ -1247,9 +1237,15 @@ def preview3d():
         })
 
     # Legacy full mesh path (used by STL export pipeline)
+    label_schema = body.get("label_schema", "full")
+    stl_opts = stl_options_from_body(body) if any(
+        k.startswith("stl_") for k in body
+    ) else None
     result = _build_mesh_response(
         seg_arr, affine, labels,
         small_threshold=small_threshold,
+        label_schema=label_schema,
+        stl_options=stl_opts,
     )
     if "error" in result:
         return jsonify(result), 400
@@ -1326,18 +1322,34 @@ def export3d():
     # ── STL export — streaming SSE progress ─────────────────────────────────
     elif fmt == "stl":
         options = stl_options_from_body(body)
+        nontissue = load_nontissue_map(seg_path, seg_arr.shape) if options.sulcal_recovery else None
 
         def _stl_gen_new():
-            for event in iter_stl_export(
-                seg_arr=seg_arr,
-                affine=affine,
-                label_items=label_items,
-                out_dir=out_dir,
-                timestamp=ts,
-                excluded_components=excluded_comps,
-                options=options,
-            ):
-                yield f'data: {json.dumps(event)}\n\n'
+            saved_paths = []
+            try:
+                for event in iter_stl_export(
+                    seg_arr=seg_arr,
+                    affine=affine,
+                    label_items=label_items,
+                    out_dir=out_dir,
+                    timestamp=ts,
+                    excluded_components=excluded_comps,
+                    options=options,
+                    nontissue_prob=nontissue,
+                ):
+                    if isinstance(event, dict) and event.get("saved"):
+                        saved_paths = list(event["saved"])
+                    yield f"data: {json.dumps(json_ready(event), allow_nan=False)}\n\n"
+            except Exception as exc:
+                # The STL is already on disk once export() returns. Still emit
+                # a done event so the browser opens the preview.
+                fallback = {
+                    "status": "done" if saved_paths else "error",
+                    "saved": saved_paths,
+                    "dir": out_dir,
+                    "error": str(exc),
+                }
+                yield f"data: {json.dumps(json_ready(fallback), allow_nan=False)}\n\n"
 
         return Response(
             _stl_gen_new(),
