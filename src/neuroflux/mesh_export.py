@@ -229,6 +229,43 @@ def mesh_quality_report(mesh) -> dict:
     return report
 
 
+def _crop_foreground(mask: np.ndarray, pad: int) -> tuple[np.ndarray, np.ndarray]:
+    """Crop a mask to its foreground bounding box plus padding.
+
+    Distance transforms and marching cubes are linear in the voxel count.
+    A brain sitting in a full FOV is a small fraction of that grid, so the
+    crop is the difference between a few seconds and a minute.
+    """
+    fg = np.argwhere(mask > 0.5)
+    if fg.size == 0:
+        return mask, np.zeros(3, dtype=np.float64)
+    lo = np.maximum(fg.min(axis=0) - pad, 0)
+    hi = np.minimum(fg.max(axis=0) + pad + 1, np.array(mask.shape))
+    slices = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    return mask[slices], lo.astype(np.float64)
+
+
+def _decimate_mesh(mesh, max_faces: int):
+    """Reduce a mesh to about max_faces. Quadric needs fast-simplification."""
+    if len(mesh.faces) <= max_faces:
+        return mesh
+    try:
+        return mesh.simplify_quadric_decimation(face_count=max_faces)
+    except Exception:
+        pass
+    try:
+        pitch = float(np.max(mesh.extents)) / ((max_faces / 2) ** 0.5)
+        reduced = mesh.simplify_vertex_clustering(pitch)
+        if len(reduced.faces) > max_faces * 1.5:
+            try:
+                return reduced.simplify_quadric_decimation(face_count=max_faces)
+            except Exception:
+                return reduced
+        return reduced
+    except Exception:
+        return mesh
+
+
 def iter_stl_export(
     seg_arr: np.ndarray,
     affine: np.ndarray,
@@ -298,6 +335,13 @@ def iter_stl_export(
             return None
 
         mask = binary_mask.astype(np.float32)
+        raw_sigma = max(0.0, float(tissue_params.get("sigma", 0.8)))
+        positive = voxel_sizes[voxel_sizes > 0]
+        min_vox = float(np.min(positive)) if positive.size else 1.0
+        # Gaussian / SDF blur moves the surface by a few sigma. Keep that
+        # margin inside the crop so the zero level set is not clipped.
+        pad = max(4, int(np.ceil(max(raw_sigma, min_vox) * 3.0 / min_vox)) + 2)
+        mask, crop_lo = _crop_foreground(mask, pad)
 
         hollow_inner = None
         if options.hollow:
@@ -317,7 +361,7 @@ def iter_stl_export(
                 if inner_sm.max() >= 0.3:
                     try:
                         inner_verts, inner_faces, _, _ = marching_cubes(inner_sm, level=0.5)
-                        inner_mm = (inner_verts @ vox2mm.T) + origin
+                        inner_mm = ((inner_verts + crop_lo) @ vox2mm.T) + origin
                         hollow_inner = _trimesh.Trimesh(
                             vertices=inner_mm,
                             faces=inner_faces,
@@ -334,7 +378,6 @@ def iter_stl_export(
             yield 5, f"{name} - upsampling x{upsample}..."
             mask = nd_zoom(mask, upsample, order=1)
 
-        raw_sigma = max(0.0, float(tissue_params.get("sigma", 0.8)))
         sampling_mm = [
             float(voxel_sizes[i]) / upsample if voxel_sizes[i] > 0 else 1.0 / upsample
             for i in range(3)
@@ -388,7 +431,7 @@ def iter_stl_export(
         except Exception:
             return None
 
-        verts_mm = (verts @ (vox2mm / upsample).T) + origin
+        verts_mm = (((verts / upsample) + crop_lo) @ vox2mm.T) + origin
         mesh = _trimesh.Trimesh(vertices=verts_mm, faces=faces_mc, process=True)
         parts = mesh.split(only_watertight=False)
         if len(parts) > 1:
@@ -400,6 +443,13 @@ def iter_stl_export(
                     _trimesh.util.concatenate(kept_parts)
                     if len(kept_parts) > 1 else kept_parts[0]
                 )
+
+        # Decimate before smoothing and hole-filling. Those steps walk every
+        # vertex in Python/SciPy, and a raw marching-cubes brain is often
+        # several million faces. Doing it afterwards is what made STL export
+        # take minutes.
+        yield 40, f"{name} - decimation ({len(mesh.faces):,} faces)..."
+        mesh = _decimate_mesh(mesh, options.max_faces)
 
         raw_taubin = int(tissue_params.get("taubin", 0))
         tau_iter = 0 if raw_taubin <= 0 else max(1, min(50, raw_taubin))
@@ -429,8 +479,11 @@ def iter_stl_export(
             _trimesh.repair.fix_normals(mesh)
         except Exception:
             pass
+        # fill_holes builds a NetworkX cycle basis over every open edge.
+        # On a sulcal surface that is minutes, and the fans it inserts do not
+        # belong in an anatomical mesh. Only close small openings.
         for _ in range(3):
-            if mesh.is_watertight:
+            if len(mesh.faces) > 400_000 or mesh.is_watertight:
                 break
             try:
                 _trimesh.repair.fill_holes(mesh)
@@ -448,23 +501,6 @@ def iter_stl_export(
                 _trimesh.repair.fix_normals(mesh)
             except Exception:
                 pass
-
-        yield 78, f"{name} - decimation ({len(mesh.faces):,} faces)..."
-        if len(mesh.faces) > options.max_faces:
-            decimated = False
-            try:
-                mesh = mesh.simplify_quadric_decimation(face_count=options.max_faces)
-                decimated = True
-            except Exception:
-                pass
-            if not decimated:
-                try:
-                    pitch = float(np.max(mesh.extents)) / ((options.max_faces / 2) ** 0.5)
-                    mesh = mesh.simplify_vertex_clustering(pitch)
-                    if len(mesh.faces) > options.max_faces * 1.5:
-                        mesh = mesh.simplify_quadric_decimation(face_count=options.max_faces)
-                except Exception:
-                    pass
 
         if options.flat_base and len(mesh.vertices) > 3:
             try:
