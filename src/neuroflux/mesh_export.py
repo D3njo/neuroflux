@@ -266,6 +266,74 @@ def _decimate_mesh(mesh, max_faces: int):
         return mesh
 
 
+def _hollow_face_budgets(outer_faces: int, inner_faces: int, max_faces: int) -> tuple[int, int]:
+    """Split a face cap across the outer shell and the hollow inner surface.
+
+    Decimation used to run after the shells were concatenated, so ``max_faces``
+    bounded the pair. Each shell is reduced on its own, in proportion to its
+    current face count, which keeps that cap without letting simplification
+    stitch the wall shut.
+    """
+    outer_faces = max(0, int(outer_faces))
+    inner_faces = max(0, int(inner_faces))
+    max_faces = max(1, int(max_faces))
+    if inner_faces <= 0:
+        return max_faces, 0
+    if outer_faces <= 0:
+        return 0, max_faces
+    if outer_faces + inner_faces <= max_faces:
+        return outer_faces, inner_faces
+
+    # Once the pair is over the cap, each shell's proportional share is smaller
+    # than the face count it already has, so both sides are reduced.
+    outer_budget = int(round(max_faces * outer_faces / (outer_faces + inner_faces)))
+    outer_budget = min(max(outer_budget, 1), max_faces - 1)
+    return outer_budget, max_faces - outer_budget
+
+
+def _smooth_shell(mesh, tri_smooth, tau_iter: int, hc_iter: int):
+    """Apply the same Taubin / Humphrey passes to one shell."""
+    if tau_iter > 0:
+        try:
+            tri_smooth.filter_taubin(mesh, lamb=0.45, nu=0.48, iterations=tau_iter)
+        except Exception:
+            pass
+    if hc_iter > 0:
+        try:
+            tri_smooth.filter_humphrey(
+                mesh,
+                alpha=0.08,
+                beta=0.55,
+                iterations=hc_iter,
+            )
+        except Exception:
+            pass
+
+
+def _repair_shell(mesh, trimesh_mod):
+    """Drop degenerate faces and close only small openings."""
+    try:
+        mesh.remove_degenerate_faces()
+        mesh.remove_duplicate_faces()
+        trimesh_mod.repair.fix_normals(mesh)
+    except Exception:
+        pass
+    # fill_holes builds a NetworkX cycle basis over every open edge.
+    # On a sulcal surface that is minutes, and the fans it inserts do not
+    # belong in an anatomical mesh. Only close small openings.
+    for _ in range(3):
+        if len(mesh.faces) > 400_000 or mesh.is_watertight:
+            break
+        try:
+            trimesh_mod.repair.fill_holes(mesh)
+        except Exception:
+            break
+    try:
+        trimesh_mod.repair.fix_normals(mesh)
+    except Exception:
+        pass
+
+
 def iter_stl_export(
     seg_arr: np.ndarray,
     affine: np.ndarray,
@@ -447,56 +515,39 @@ def iter_stl_export(
         # Decimate before smoothing and hole-filling. Those steps walk every
         # vertex in Python/SciPy, and a raw marching-cubes brain is often
         # several million faces. Doing it afterwards is what made STL export
-        # take minutes.
-        yield 40, f"{name} - decimation ({len(mesh.faces):,} faces)..."
-        mesh = _decimate_mesh(mesh, options.max_faces)
+        # take minutes. A hollow print is two shells: reduce and smooth both
+        # of them under one face cap so the inner surface is not left at full
+        # resolution and smoothing cannot pull only the outer wall inward.
+        inner_faces = len(hollow_inner.faces) if hollow_inner is not None else 0
+        outer_budget, inner_budget = _hollow_face_budgets(
+            len(mesh.faces), inner_faces, options.max_faces
+        )
+        yield 40, f"{name} - decimation ({len(mesh.faces) + inner_faces:,} faces)..."
+        mesh = _decimate_mesh(mesh, outer_budget)
+        if hollow_inner is not None:
+            hollow_inner = _decimate_mesh(hollow_inner, inner_budget)
 
         raw_taubin = int(tissue_params.get("taubin", 0))
         tau_iter = 0 if raw_taubin <= 0 else max(1, min(50, raw_taubin))
         if tau_iter > 0:
             yield 52, f"{name} - taubin smoothing ({tau_iter} iter)..."
-            try:
-                tri_smooth.filter_taubin(mesh, lamb=0.45, nu=0.48, iterations=tau_iter)
-            except Exception:
-                pass
+            _smooth_shell(mesh, tri_smooth, tau_iter, 0)
+            if hollow_inner is not None:
+                _smooth_shell(hollow_inner, tri_smooth, tau_iter, 0)
 
         if options.hc_iter > 0:
             yield 60, f"{name} - HC smoothing ({options.hc_iter} iter)..."
-            try:
-                tri_smooth.filter_humphrey(
-                    mesh,
-                    alpha=0.08,
-                    beta=0.55,
-                    iterations=options.hc_iter,
-                )
-            except Exception:
-                pass
+            _smooth_shell(mesh, tri_smooth, 0, options.hc_iter)
+            if hollow_inner is not None:
+                _smooth_shell(hollow_inner, tri_smooth, 0, options.hc_iter)
 
         yield 68, f"{name} - mesh repair..."
-        try:
-            mesh.remove_degenerate_faces()
-            mesh.remove_duplicate_faces()
-            _trimesh.repair.fix_normals(mesh)
-        except Exception:
-            pass
-        # fill_holes builds a NetworkX cycle basis over every open edge.
-        # On a sulcal surface that is minutes, and the fans it inserts do not
-        # belong in an anatomical mesh. Only close small openings.
-        for _ in range(3):
-            if len(mesh.faces) > 400_000 or mesh.is_watertight:
-                break
-            try:
-                _trimesh.repair.fill_holes(mesh)
-            except Exception:
-                break
-        try:
-            _trimesh.repair.fix_normals(mesh)
-        except Exception:
-            pass
+        _repair_shell(mesh, _trimesh)
+        if hollow_inner is not None:
+            _repair_shell(hollow_inner, _trimesh)
 
         if options.hollow and hollow_inner is not None:
             try:
-                _trimesh.repair.fix_normals(hollow_inner)
                 mesh = _trimesh.util.concatenate([mesh, hollow_inner])
                 _trimesh.repair.fix_normals(mesh)
             except Exception:
