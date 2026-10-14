@@ -3355,6 +3355,8 @@ function closeCompare() { id('compare-modal').classList.remove('on'); }
 // ── STL inline viewer ────────────────────────────────────────────────────────
 let _stlRenderer  = null;
 let _stlAnimId    = null;
+let _stlKickTimer = null;
+let _stlViewEpoch = 0;
 let _stlControls  = null;
 let _stlOnResize  = null;
 let _stlResizeObs = null;
@@ -3405,8 +3407,10 @@ function _initStlScene(buffer) {
   const THREE = window.THREE;
   if (!THREE) { id('stl-viewer-info').textContent = 'THREE not loaded'; return; }
 
-  // Tear down previous scene
+  // Tear down previous scene. This bumps the epoch and cancels that
+  // view's kick timers and bootstrap frame before we capture a new one.
   _stlStopView();
+  const epoch = _stlViewEpoch;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -3473,6 +3477,9 @@ function _initStlScene(buffer) {
     `${Math.round(triCount / 1000)}k triangles  ·  ${sx}×${sy}×${sz} mm  ·  drag to rotate  ·  scroll to zoom`;
 
   const paint = () => {
+    // `renderer` is the context captured by this scene. A kick or frame that
+    // outlives _stlStopView must not touch it after dispose.
+    if (epoch !== _stlViewEpoch || !_stlRenderer) return;
     fit();
     controls.update();
     renderer.render(scene, camera);
@@ -3483,18 +3490,29 @@ function _initStlScene(buffer) {
   // from timers until the first animation frame actually runs.
   let rafFrames = 0;
   const animate = () => {
+    if (epoch !== _stlViewEpoch) return;
     _stlAnimId = requestAnimationFrame(animate);
     rafFrames++;
     paint();
   };
-  requestAnimationFrame(() => { fit(); paint(); animate(); });
+  _stlAnimId = requestAnimationFrame(() => {
+    if (epoch !== _stlViewEpoch) return;
+    fit();
+    paint();
+    if (epoch !== _stlViewEpoch) return;
+    animate();
+  });
   let kicks = 0;
   const kick = () => {
+    // Ignore a timer from a previous open before touching shared timer state.
+    if (epoch !== _stlViewEpoch) return;
+    _stlKickTimer = null;
     if (!_stlRenderer || rafFrames > 0 || kicks++ > 30) return;
     paint();
-    setTimeout(kick, 50);
+    if (epoch !== _stlViewEpoch) return;
+    _stlKickTimer = setTimeout(kick, 50);
   };
-  setTimeout(kick, 0);
+  _stlKickTimer = setTimeout(kick, 0);
 
   const onResize = () => {
     if (!_stlRenderer) {
@@ -3512,10 +3530,12 @@ function _initStlScene(buffer) {
 }
 
 function _stlStopView() {
-  if (_stlAnimId)   { cancelAnimationFrame(_stlAnimId); _stlAnimId = null; }
-  if (_stlOnResize) { window.removeEventListener('resize', _stlOnResize); _stlOnResize = null; }
-  if (_stlResizeObs){ _stlResizeObs.disconnect(); _stlResizeObs = null; }
-  if (_stlRenderer) { _stlRenderer.dispose(); _stlRenderer = null; }
+  _stlViewEpoch++;
+  if (_stlAnimId)    { cancelAnimationFrame(_stlAnimId); _stlAnimId = null; }
+  if (_stlKickTimer) { clearTimeout(_stlKickTimer); _stlKickTimer = null; }
+  if (_stlOnResize)  { window.removeEventListener('resize', _stlOnResize); _stlOnResize = null; }
+  if (_stlResizeObs) { _stlResizeObs.disconnect(); _stlResizeObs = null; }
+  if (_stlRenderer)  { _stlRenderer.dispose(); _stlRenderer = null; }
   _stlControls = null;
 }
 
