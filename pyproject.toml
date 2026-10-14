@@ -28,6 +28,8 @@ dependencies = [
     "scipy>=1.10",
     "scikit-image>=0.19",
     "trimesh>=4.0",
+    # trimesh.simplify_quadric_decimation is a wrapper around this package.
+    "fast-simplification>=0.1.8",
     "pydicom>=2.4",
     "dicom2nifti>=2.4",
     # SynthSeg 2.0 is bundled — TF 2.18 + Keras 3 (Python 3.10–3.12)

@@ -1,9 +1,11 @@
 """Fast tests for schema-aware STL mesh export helpers."""
 
 import numpy as np
+import trimesh
 
 from neuroflux.mesh_export import (
     StlExportOptions,
+    _hollow_face_budgets,
     combine_mesh_profiles,
     iter_stl_export,
     normalize_combined_mode,
@@ -181,3 +183,68 @@ class TestStlExportGenerator:
         done = events[-1]
         report = done["reports"][done["saved"][0]]
         assert report["components"] >= 2
+
+    def test_hollow_export_reduces_and_keeps_both_shells(self, tmp_path):
+        n = 40
+        radius = 15
+        seg_arr = np.zeros((n, n, n), dtype=np.int32)
+        center = n // 2
+        zz, yy, xx = np.ogrid[:n, :n, :n]
+        seg_arr[(zz - center) ** 2 + (yy - center) ** 2 + (xx - center) ** 2 <= radius ** 2] = 2
+        max_faces = 1_200
+        options = StlExportOptions(
+            label_schema="full",
+            sigma=0.4,
+            taubin=8,
+            max_faces=max_faces,
+            sulci_enhance=0.0,
+            hc_iter=8,
+            hollow=True,
+            wall_mm=3.0,
+            combined_only=True,
+        )
+
+        events = list(iter_stl_export(
+            seg_arr=seg_arr,
+            affine=np.eye(4),
+            label_items=[("gm", 2)],
+            out_dir=str(tmp_path),
+            timestamp="hollow",
+            options=options,
+        ))
+
+        done = events[-1]
+        assert done["status"] == "done"
+        mesh = trimesh.load(done["saved"][0])
+        parts = mesh.split(only_watertight=False)
+        assert len(parts) >= 2
+        # The face cap used to apply only to the outer shell, leaving the
+        # inner surface at full marching-cubes resolution.
+        assert len(mesh.faces) <= int(max_faces * 1.15)
+        assert max(len(part.faces) for part in parts) <= max_faces
+
+        outer, inner = sorted(parts, key=lambda part: part.area, reverse=True)[:2]
+        center_mm = outer.vertices.mean(axis=0)
+        outer_r = np.linalg.norm(outer.vertices - center_mm, axis=1)
+        inner_r = np.linalg.norm(inner.vertices - center_mm, axis=1)
+        assert float(outer_r.min() - inner_r.max()) > 0.0
+
+
+class TestHollowFaceBudgets:
+    def test_solid_export_keeps_the_whole_cap(self):
+        assert _hollow_face_budgets(80_000, 0, 30_000) == (30_000, 0)
+
+    def test_under_cap_keeps_both_shells(self):
+        assert _hollow_face_budgets(400, 300, 1_000) == (400, 300)
+
+    def test_over_cap_splits_in_proportion(self):
+        outer_budget, inner_budget = _hollow_face_budgets(8_000, 4_000, 3_000)
+
+        assert outer_budget + inner_budget == 3_000
+        assert outer_budget == 2_000
+        assert inner_budget == 1_000
+
+    def test_uneven_shells_still_share_one_cap(self):
+        outer_budget, inner_budget = _hollow_face_budgets(100, 10_000, 3_000)
+
+        assert (outer_budget, inner_budget) == (30, 2_970)

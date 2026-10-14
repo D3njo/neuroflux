@@ -56,7 +56,7 @@ jobs:
             "nibabel>=5.0" "numpy>=1.24,<2.0" "scipy>=1.10" \
             "h5py>=3.8" "matplotlib>=3.7" "protobuf>=4.21,<5" \
             "flask>=2.3,<4" "flask-cors>=4.0" \
-            "scikit-image>=0.19" "trimesh>=4.0" \
+            "scikit-image>=0.19" "trimesh>=4.0" "fast-simplification>=0.1.8" \
             "pydicom>=2.4" "dicom2nifti>=2.4" \
             "pytest>=8" "pytest-timeout>=2.3"
           pip install -e . --no-deps
