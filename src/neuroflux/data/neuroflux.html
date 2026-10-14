@@ -6,16 +6,100 @@
 <title>NEURO//FLUX — Neural Imaging Interface</title>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600&display=swap" rel="stylesheet">
 <script>
-// Patch getContext BEFORE NiiVue initialises so all WebGL canvases
-// retain their drawing buffer — required for toDataURL() to work.
+// Patch WebGL BEFORE NiiVue / Three.js create contexts.
 (function() {
   const _orig = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function(type, attrs) {
     if (type === 'webgl2' || type === 'webgl' || type === 'experimental-webgl') {
-      attrs = Object.assign({}, attrs || {}, { preserveDrawingBuffer: true });
+      // Linux (Mesa / Wayland) does not present a preserveDrawingBuffer canvas
+      // until the next click, and MSAA on the default framebuffer breaks the
+      // 3D-texture overlay bake. Opaque, single-sampled contexts composite
+      // immediately. Screenshots copy the canvas in the same turn as the draw.
+      attrs = Object.assign({}, attrs || {}, {
+        alpha: false,
+        antialias: false,
+        preserveDrawingBuffer: false,
+        premultipliedAlpha: false,
+      });
     }
     return _orig.call(this, type, attrs);
   };
+
+  // Niivue 0.47 feeds the overlay *array* to uniform1f on the volume-render
+  // shader (slice shaders correctly pass .length). The value becomes NaN.
+  // ANGLE on Windows still runs the overlay pass; Mesa flushes that NaN to 0
+  // and the raycaster skips every segmentation layer.
+  if (typeof WebGL2RenderingContext !== 'undefined') {
+    const _u1f = WebGL2RenderingContext.prototype.uniform1f;
+    WebGL2RenderingContext.prototype.uniform1f = function(location, value) {
+      if (Array.isArray(value) && value.length && typeof value[0] === 'object') {
+        value = value.length;
+      }
+      return _u1f.call(this, location, value);
+    };
+
+    // Niivue rebuilds the 3D overlay texture with texStorage3D and then only
+    // redraws visible tissues. texStorage leaves the texels undefined. ANGLE
+    // happens to return zeros, so hiding a tissue works on Windows. Mesa
+    // reuses the previous image, and the hidden tissue stays on screen.
+    // A full-volume texSubImage from JS does not reliably replace that image
+    // here; clearing each slice through a framebuffer does.
+    const _texStorage3D = WebGL2RenderingContext.prototype.texStorage3D;
+    WebGL2RenderingContext.prototype.texStorage3D = function(target, levels, internalFormat, width, height, depth) {
+      _texStorage3D.call(this, target, levels, internalFormat, width, height, depth);
+      if (target !== this.TEXTURE_3D || internalFormat !== this.RGBA8) return;
+      if (!width || !height || !depth || depth > 4096) return;
+      const gl = this;
+      const tex = gl.getParameter(gl.TEXTURE_BINDING_3D);
+      if (!tex) return;
+      const fb = gl.createFramebuffer();
+      const prevFB = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+      const prevVP = gl.getParameter(gl.VIEWPORT);
+      const prevClear = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+      const prevMask = gl.getParameter(gl.COLOR_WRITEMASK);
+      const scissorOn = gl.isEnabled(gl.SCISSOR_TEST);
+      try {
+        if (scissorOn) gl.disable(gl.SCISSOR_TEST);
+        gl.colorMask(true, true, true, true);
+        gl.clearColor(0, 0, 0, 0);
+        gl.bindTexture(gl.TEXTURE_3D, null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.viewport(0, 0, width, height);
+        let ok = true;
+        for (let z = 0; z < depth; z++) {
+          gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, tex, 0, z);
+          if (z === 0 && gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+            ok = false;
+            break;
+          }
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+        if (!ok) {
+          const slice = new Uint8Array(width * height * 4);
+          const align = gl.getParameter(gl.UNPACK_ALIGNMENT);
+          const row = gl.getParameter(gl.UNPACK_ROW_LENGTH);
+          const imgH = gl.getParameter(gl.UNPACK_IMAGE_HEIGHT);
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+          gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+          gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0);
+          gl.bindTexture(gl.TEXTURE_3D, tex);
+          for (let z = 0; z < depth; z++) {
+            gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, width, height, 1, gl.RGBA, gl.UNSIGNED_BYTE, slice);
+          }
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, align);
+          gl.pixelStorei(gl.UNPACK_ROW_LENGTH, row);
+          gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, imgH);
+        }
+      } catch (e) {}
+      try { gl.bindFramebuffer(gl.FRAMEBUFFER, prevFB); } catch (e) {}
+      try { gl.viewport(prevVP[0], prevVP[1], prevVP[2], prevVP[3]); } catch (e) {}
+      try { gl.clearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]); } catch (e) {}
+      try { gl.colorMask(prevMask[0], prevMask[1], prevMask[2], prevMask[3]); } catch (e) {}
+      if (scissorOn) { try { gl.enable(gl.SCISSOR_TEST); } catch (e) {} }
+      try { gl.bindTexture(gl.TEXTURE_3D, tex); } catch (e) {}
+      try { gl.deleteFramebuffer(fb); } catch (e) {}
+    };
+  }
 })();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@niivue/niivue@0.47.0/dist/niivue.umd.js"></script>
@@ -2258,6 +2342,27 @@ function togRotate() {
   else { rotating=true; status('Auto rotation active'); rotTmr=setInterval(()=>{ azimuth=(azimuth+1)%360; try{nv4.scene.renderAzimuth=azimuth;nv4.drawScene();}catch(e){} },40); }
 }
 
+// Linux compositors drop the first present of a WebGL canvas that was
+// display:none, and they keep a stale frame until a pointer event. Redraw
+// now and again on the next frames so the buffer actually reaches the screen.
+function presentViewer(nv) {
+  if (!nv) return;
+  const redraw = () => {
+    try { nv.resizeListener(); } catch (e) {}
+    try { nv.drawScene(); } catch (e) {}
+  };
+  redraw();
+  const canvas = nv.canvas;
+  if (!canvas) return;
+  const prev = canvas.style.transform;
+  canvas.style.transform = prev ? prev + ' translateZ(0)' : 'translateZ(0)';
+  requestAnimationFrame(() => {
+    canvas.style.transform = prev;
+    redraw();
+    setTimeout(redraw, 50);
+  });
+}
+
 // ── Screenshot ──────────────────────────────
 async function doScreenshot() {
   if (!loaded) return;
@@ -2266,10 +2371,9 @@ async function doScreenshot() {
   const labels  = ['axial', 'sagittal', 'coronal', '3d'];
   const viewers = [nv1, nv2, nv3, nv4];
 
-  // Force redraw on all viewers, then wait one frame for the GL buffer
+  // Copy in this turn. Without preserveDrawingBuffer the drawing buffer is
+  // cleared once the browser composites, so a later animation frame is blank.
   viewers.forEach(nv => { try { nv.drawScene(); } catch(e) {} });
-  await new Promise(r => requestAnimationFrame(r));
-  await new Promise(r => requestAnimationFrame(r)); // second frame for safety
 
   // Capture each canvas — draw to a temp 2D canvas first to bypass
   // any taint/CORS issues, then export as PNG data URL
@@ -3252,6 +3356,8 @@ function closeCompare() { id('compare-modal').classList.remove('on'); }
 let _stlRenderer  = null;
 let _stlAnimId    = null;
 let _stlControls  = null;
+let _stlOnResize  = null;
+let _stlResizeObs = null;
 let _stlDlBuffer  = null;
 let _stlDlName    = 'mesh.stl';
 
@@ -3300,20 +3406,25 @@ function _initStlScene(buffer) {
   if (!THREE) { id('stl-viewer-info').textContent = 'THREE not loaded'; return; }
 
   // Tear down previous scene
-  if (_stlAnimId)   { cancelAnimationFrame(_stlAnimId); _stlAnimId = null; }
-  if (_stlRenderer) { _stlRenderer.dispose(); _stlRenderer = null; }
+  _stlStopView();
 
-  const w = canvas.clientWidth  || 800;
-  const h = canvas.clientHeight || 560;
-
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(w, h);
   renderer.setClearColor(0x0d0f12, 1);
   _stlRenderer = renderer;
 
   const scene  = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 5000);
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 5000);
+
+  const fit = () => {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (!w || !h) return false;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    return true;
+  };
 
   // Lighting — cyberpunk palette
   scene.add(new THREE.AmbientLight(0x112233, 3));
@@ -3361,23 +3472,51 @@ function _initStlScene(buffer) {
   id('stl-viewer-info').textContent =
     `${Math.round(triCount / 1000)}k triangles  ·  ${sx}×${sy}×${sz} mm  ·  drag to rotate  ·  scroll to zoom`;
 
-  // Animate
-  const animate = () => {
-    _stlAnimId = requestAnimationFrame(animate);
+  const paint = () => {
+    fit();
     controls.update();
     renderer.render(scene, camera);
   };
-  animate();
 
-  // Resize
-  const onResize = () => {
-    if (!_stlRenderer) { window.removeEventListener('resize', onResize); return; }
-    const nw = canvas.clientWidth, nh = canvas.clientHeight;
-    renderer.setSize(nw, nh);
-    camera.aspect = nw / nh;
-    camera.updateProjectionMatrix();
+  // rAF is enough once the surface is live. On Wayland a canvas that just
+  // left display:none often gets no frames until a click, so also paint
+  // from timers until the first animation frame actually runs.
+  let rafFrames = 0;
+  const animate = () => {
+    _stlAnimId = requestAnimationFrame(animate);
+    rafFrames++;
+    paint();
   };
+  requestAnimationFrame(() => { fit(); paint(); animate(); });
+  let kicks = 0;
+  const kick = () => {
+    if (!_stlRenderer || rafFrames > 0 || kicks++ > 30) return;
+    paint();
+    setTimeout(kick, 50);
+  };
+  setTimeout(kick, 0);
+
+  const onResize = () => {
+    if (!_stlRenderer) {
+      window.removeEventListener('resize', onResize);
+      return;
+    }
+    paint();
+  };
+  _stlOnResize = onResize;
   window.addEventListener('resize', onResize);
+  if (typeof ResizeObserver !== 'undefined') {
+    _stlResizeObs = new ResizeObserver(() => { if (_stlRenderer) paint(); });
+    _stlResizeObs.observe(canvas.parentElement || canvas);
+  }
+}
+
+function _stlStopView() {
+  if (_stlAnimId)   { cancelAnimationFrame(_stlAnimId); _stlAnimId = null; }
+  if (_stlOnResize) { window.removeEventListener('resize', _stlOnResize); _stlOnResize = null; }
+  if (_stlResizeObs){ _stlResizeObs.disconnect(); _stlResizeObs = null; }
+  if (_stlRenderer) { _stlRenderer.dispose(); _stlRenderer = null; }
+  _stlControls = null;
 }
 
 function togStlAutoRot() {
@@ -3389,9 +3528,7 @@ function togStlAutoRot() {
 
 function closeStlViewer() {
   id('stl-viewer-modal').classList.remove('on');
-  if (_stlAnimId)   { cancelAnimationFrame(_stlAnimId); _stlAnimId = null; }
-  if (_stlRenderer) { _stlRenderer.dispose(); _stlRenderer = null; }
-  _stlControls  = null;
+  _stlStopView();
 }
 
 function _downloadStl() {
@@ -4659,11 +4796,14 @@ async function _fetchAndActivateOverlays() {
   const total = keysToLoad.length;
   let done = 0;
   _olProg(0, total);
-  await Promise.all(keysToLoad.map(async (key) => {
+  // One viewer at a time. Parallel addVolume calls interleave the 3D overlay
+  // texture bake, and on Mesa the half-finished texture stays empty.
+  for (const key of keysToLoad) {
     await _loadOverlay(key);
     _olProg(++done, total);
-  }));
-
+  }
+  try { nv4 && nv4.updateGLVolume(); } catch (e) {}
+  presentViewer(nv4);
 }
 
 async function _loadOverlay(key) {
@@ -4782,6 +4922,7 @@ async function togOverlay(key) {
     _olProg(0, 1);
     await _loadOverlay(key);
     _olProg(1, 1);
+    presentViewer(nv4);
   }
   _updateExportBtn();
 }
@@ -5534,6 +5675,7 @@ async function _p3dInitNV() {
     _p3dNV.scene.volScaleMultiplier = 1.8;
     _p3dNV.drawScene();
   } catch(e) {}
+  presentViewer(_p3dNV);
 
   // Load tissue overlays after render is visible (non-blocking)
   _p3dTissueVols = {};
@@ -5693,8 +5835,7 @@ async function _p3dReloadMasks() {
   const lblsToReload = _p3dLabels ? Object.values(_p3dLabels).map(Number) : [1,2,3,4,5,6];
 
   for (const lbl of lblsToReload) {
-    const idx = _p3dTissueVols[lbl];
-    if (idx === undefined || idx === null) continue;
+    if (_p3dTissueVols[lbl] == null && !_p3dTissueImgs[lbl] && !_p3dFindTissueVol(lbl)) continue;
     if (!_p3dNV) return;
     try {
       const url = `${SEG_SERVER}/mask?path=${encodeURIComponent(_p3dSegPath)}&label=${lbl}` +
@@ -5729,15 +5870,22 @@ async function _p3dReloadMasks() {
         opacity: hidden ? 0 : 0.55, cal_min: 0.5, cal_max: 1.5,
       });
       if (!_p3dNV) return;  // may have been closed during loadFromFile await
-      // Replace old volume
-      const oldVol = _p3dNV.volumes.find(v => v.name && (v.name.startsWith(`pt${lbl}`) || v.name === `pt${lbl}.nii`));
+      _p3dTissueImgs[lbl] = img;
+      // Replace old volume. A hidden tissue stays out of the viewer so the
+      // rebake cannot paint it back in.
+      const oldVol = _p3dFindTissueVol(lbl);
       if (oldVol) try { _p3dNV.removeVolume(oldVol); } catch(e) {}
-      await _p3dNV.addVolume(img);
-      if (!_p3dNV) return;
-      _p3dTissueVols[lbl] = _p3dNV.volumes.length - 1;
+      if (hidden) {
+        _p3dTissueVols[lbl] = null;
+      } else {
+        await _p3dNV.addVolume(img);
+        if (!_p3dNV) return;
+        _p3dTissueVols[lbl] = _p3dNV.volumes.length - 1;
+      }
     } catch(e) { console.warn(`reload mask ${lbl}:`, e); }
   }
-  try { _p3dNV.drawScene(); } catch(e) {}
+  try { _p3dNV.updateGLVolume(); } catch(e) {}
+  presentViewer(_p3dNV);
 }
 
 function _p3dTogglePreviewTissue(lbl) {
@@ -5750,12 +5898,25 @@ function _p3dTogglePreviewTissue(lbl) {
   _p3dBuildTissueList();
 }
 
-// Per-tissue overlay volumes loaded into nv4 for the preview
-// tissueLabel → NiiVue volume index in nv4
+// Per-tissue overlay volumes loaded into the preview.
+// tissueLabel → NiiVue volume index, and the NVImage kept so a hidden
+// tissue can be put back without fetching the mask again.
 let _p3dTissueVols = {};
+let _p3dTissueImgs = {};
+
+function _p3dTissueName(name, lbl) {
+  return name === `pt${lbl}.nii` || name === `pt${lbl}`
+      || name === `pt${lbl}_reload` || name === `pt${lbl}_excl.nii`;
+}
+
+function _p3dFindTissueVol(lbl) {
+  const vols = _p3dNV?.volumes || [];
+  return vols.find(v => v && _p3dTissueName(v.name, lbl)) || null;
+}
 
 async function _p3dLoadTissueOverlays() {
   _p3dTissueVols = {};
+  _p3dTissueImgs = {};
   if (!NVImg || !_p3dNV) return;
 
   const lblsToLoad = _p3dLabels ? Object.values(_p3dLabels).map(Number).sort((a,b)=>a-b) : [1,2,3,4,5,6];
@@ -5789,14 +5950,21 @@ async function _p3dLoadTissueOverlays() {
             opacity: initOpacity, cal_min: 0.5, cal_max: 1.5,
           });
           if (!_p3dNV) { resolve(); return; }
+          _p3dTissueImgs[lbl] = img;
           await _p3dNV.addVolume(img);
-          _p3dTissueVols[lbl] = _p3dNV.volumes.length - 1;
-          try { _p3dNV.setOpacity(_p3dNV.volumes.length - 1, initOpacity); } catch(e) {}
+          if (_p3dPreviewHiddenTissues.has(lbl)) {
+            try { _p3dNV.removeVolume(img); } catch(e) {}
+            _p3dTissueVols[lbl] = null;
+          } else {
+            _p3dTissueVols[lbl] = _p3dNV.volumes.length - 1;
+            try { _p3dNV.setOpacity(_p3dNV.volumes.length - 1, initOpacity); } catch(e) {}
+          }
           _p3dBuildTissueList();
         } catch(e) { console.warn(`preview struct tissue ${lbl}:`, e); }
         resolve();
       });
     }
+    presentViewer(_p3dNV);
     return;
   }
 
@@ -5841,13 +6009,15 @@ async function _p3dLoadTissueOverlays() {
           opacity:  initOpacity, cal_min: 0.5, cal_max: 1.5,
         });
         if (!_p3dNV) { resolve(); return; }
+        _p3dTissueImgs[lbl] = img;
         await _p3dNV.addVolume(img);
-        _p3dTissueVols[lbl] = _p3dNV.volumes.length - 1;
-        // Apply correct opacity after adding (NiiVue may reset it)
-        try {
-          const idx = _p3dNV.volumes.length - 1;
-          _p3dNV.setOpacity(idx, initOpacity);
-        } catch(e) {}
+        if (_p3dPreviewHiddenTissues.has(lbl)) {
+          try { _p3dNV.removeVolume(img); } catch(e) {}
+          _p3dTissueVols[lbl] = null;
+        } else {
+          _p3dTissueVols[lbl] = _p3dNV.volumes.length - 1;
+          try { _p3dNV.setOpacity(_p3dNV.volumes.length - 1, initOpacity); } catch(e) {}
+        }
         _p3dBuildTissueList();
       } catch(e) {
         console.warn(`preview tissue ${lbl}:`, e);
@@ -5855,18 +6025,38 @@ async function _p3dLoadTissueOverlays() {
       resolve();
     });
   }
+  presentViewer(_p3dNV);
 }
 
 function _p3dApplyPreviewTissues() {
   if (!_p3dNV) return;
   const lbls = _p3dLabels ? Object.values(_p3dLabels).map(Number) : [1,2,3,4,5,6];
+  let changed = false;
   lbls.forEach(lbl => {
-    const idx = _p3dTissueVols[lbl];
-    if (idx === undefined || idx === null) return;
-    try {
-      _p3dNV.setOpacity(idx, _p3dPreviewHiddenTissues.has(lbl) ? 0 : 0.55);
-    } catch(e) {}
+    const hidden = _p3dPreviewHiddenTissues.has(lbl);
+    const vol = _p3dFindTissueVol(lbl);
+    if (hidden) {
+      const img = vol || _p3dTissueImgs[lbl];
+      if (!img) return;
+      _p3dTissueImgs[lbl] = img;
+      // Opacity 0 is not drawn over the old texels. Take the volume out so
+      // the next bake never writes this tissue.
+      if (vol) {
+        try { _p3dNV.removeVolume(vol); } catch (e) {}
+        changed = true;
+      }
+      _p3dTissueVols[lbl] = null;
+    } else if (!vol && _p3dTissueImgs[lbl]) {
+      const img = _p3dTissueImgs[lbl];
+      img.opacity = 0.55;
+      try { _p3dNV.addVolume(img); } catch (e) {}
+      _p3dTissueVols[lbl] = _p3dNV.volumes.length - 1;
+      changed = true;
+    }
   });
+  if (!changed) return;
+  try { _p3dNV.updateGLVolume(); } catch (e) {}
+  presentViewer(_p3dNV);
 }
 
 function _p3dRestoreAllTissues() {
@@ -5880,6 +6070,7 @@ function _p3dRestoreAllTissues() {
     } catch(e) {}
   });
   _p3dTissueVols = {};
+  _p3dTissueImgs = {};
 }
 
 function _p3dForwardEvents() {
@@ -6030,6 +6221,7 @@ function _p3dCleanup() {
     _p3dNV = null;
   }
   _p3dTissueVols = {};
+  _p3dTissueImgs = {};
 }
 </script>
 </body>
